@@ -33,6 +33,14 @@ pub enum HolomapError {
     },
     /// A parameter failed validation (named in the message).
     InvalidParameter(&'static str),
+    /// `data` contains a non-finite value (NaN or ±∞) at this flat index.
+    /// Distances and the fuzzy graph have no meaning over non-finite input,
+    /// so it is rejected up front rather than silently producing a NaN
+    /// embedding.
+    NonFiniteInput {
+        /// Flat index into `data` of the first offending value.
+        index: usize,
+    },
 }
 
 impl std::fmt::Display for HolomapError {
@@ -47,6 +55,9 @@ impl std::fmt::Display for HolomapError {
                 "need more than n_neighbors={n_neighbors} points, got {n}"
             ),
             Self::InvalidParameter(what) => write!(f, "invalid parameter: {what}"),
+            Self::NonFiniteInput { index } => {
+                write!(f, "data contains a non-finite value at index {index}")
+            }
         }
     }
 }
@@ -128,6 +139,9 @@ impl Holomap {
                 n_neighbors: self.n_neighbors,
             });
         }
+        if let Some(index) = data.iter().position(|x| !x.is_finite()) {
+            return Err(HolomapError::NonFiniteInput { index });
+        }
 
         // --- the pipeline; RNG draw order is fixed: init noise, then SGD ----
         let knn = exact_knn(data, n_features, self.n_neighbors, self.metric);
@@ -158,6 +172,23 @@ impl Holomap {
             &mut rng,
         );
         Ok(embedding)
+    }
+
+    /// [`ndarray`] front door: embed an `n × n_features` view into an
+    /// `n × n_components` array. Same contract as [`Holomap::fit_transform`];
+    /// the input is copied to a contiguous row-major buffer first (the view
+    /// may be non-standard-layout).
+    #[cfg(feature = "ndarray")]
+    pub fn fit_transform_array(
+        &self,
+        data: ndarray::ArrayView2<f32>,
+    ) -> Result<ndarray::Array2<f32>, HolomapError> {
+        let n_features = data.ncols();
+        let flat: Vec<f32> = data.iter().copied().collect(); // row-major, contiguous
+        let embedding = self.fit_transform(&flat, n_features)?;
+        let n = embedding.len() / self.n_components;
+        // never panics: fit_transform returns exactly n * n_components
+        Ok(ndarray::Array2::from_shape_vec((n, self.n_components), embedding).unwrap())
     }
 }
 
@@ -206,6 +237,15 @@ impl HolomapBuilder {
     /// Convenience: build and fit in one chain.
     pub fn fit_transform(self, data: &[f32], n_features: usize) -> Result<Vec<f32>, HolomapError> {
         self.inner.fit_transform(data, n_features)
+    }
+
+    /// Convenience: build and fit an [`ndarray`] view in one chain.
+    #[cfg(feature = "ndarray")]
+    pub fn fit_transform_array(
+        self,
+        data: ndarray::ArrayView2<f32>,
+    ) -> Result<ndarray::Array2<f32>, HolomapError> {
+        self.inner.fit_transform_array(data)
     }
 }
 
@@ -302,5 +342,72 @@ mod tests {
             Holomap::builder(1).spread(0.0).fit_transform(&data, 5),
             Err(HolomapError::InvalidParameter(_))
         ));
+    }
+
+    #[cfg(feature = "ndarray")]
+    #[test]
+    fn ndarray_front_door_matches_slice_api() {
+        let flat = blobs();
+        let arr = ndarray::Array2::from_shape_vec((36, 5), flat.clone()).unwrap();
+
+        let via_slice = Holomap::builder(42)
+            .n_neighbors(5)
+            .fit_transform(&flat, 5)
+            .unwrap();
+        let via_array = Holomap::builder(42)
+            .n_neighbors(5)
+            .fit_transform_array(arr.view())
+            .unwrap();
+
+        assert_eq!(via_array.shape(), &[36, 2]);
+        // identical pipeline → bit-identical results through either door
+        assert_eq!(via_array.as_slice().unwrap(), via_slice.as_slice());
+    }
+
+    #[cfg(feature = "ndarray")]
+    #[test]
+    fn ndarray_front_door_handles_nonstandard_layout() {
+        // a transposed view is non-contiguous; the copy-to-row-major must
+        // still produce the correct embedding (36 points × 5 features)
+        let flat = blobs();
+        let arr = ndarray::Array2::from_shape_vec((5, 36), {
+            // build the transpose explicitly so the logical data matches `flat`
+            let mut t = vec![0.0_f32; flat.len()];
+            for r in 0..36 {
+                for c in 0..5 {
+                    t[c * 36 + r] = flat[r * 5 + c];
+                }
+            }
+            t
+        })
+        .unwrap();
+        let view = arr.t(); // 36×5 non-standard-layout view over the same data
+        let via_array = Holomap::builder(42)
+            .n_neighbors(5)
+            .fit_transform_array(view)
+            .unwrap();
+        let via_slice = Holomap::builder(42)
+            .n_neighbors(5)
+            .fit_transform(&flat, 5)
+            .unwrap();
+        assert_eq!(via_array.as_slice().unwrap(), via_slice.as_slice());
+    }
+
+    #[test]
+    fn rejects_non_finite_input() {
+        let mut data = blobs();
+        let nan_at = 3 * 5 + 2; // row 3, feature 2
+        data[nan_at] = f32::NAN;
+        assert_eq!(
+            Holomap::builder(1).n_neighbors(5).fit_transform(&data, 5),
+            Err(HolomapError::NonFiniteInput { index: nan_at })
+        );
+
+        let mut data = blobs();
+        data[0] = f32::INFINITY;
+        assert_eq!(
+            Holomap::builder(1).n_neighbors(5).fit_transform(&data, 5),
+            Err(HolomapError::NonFiniteInput { index: 0 })
+        );
     }
 }

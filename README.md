@@ -51,7 +51,8 @@ umap-learn's 0.955; swiss roll 0.991 vs 0.990. Wall-clock at 1k×50-d points:
 - `fit_transform` via a builder: `n_components`, `n_neighbors`, `min_dist`, `spread`, `metric` (euclidean | cosine), `n_epochs`, `init` (spectral | random), `seed` (required)
 - Exact brute-force kNN — deterministic by construction; honest envelope is ≤ ~50k points
 - Serial seeded SGD (single PCG64 stream — *all* pipeline randomness lives in one place)
-- Dependencies: `rand` + `rand_pcg`, `nalgebra` (pure-Rust eigensolves for the spectral init; Lanczos itself is in-crate), optional `serde`. No BLAS, no LAPACK, no C.
+- Dependencies: `rand` + `rand_pcg`, `nalgebra` (pure-Rust eigensolves for the spectral init; Lanczos itself is in-crate). No BLAS, no LAPACK, no C.
+- Optional features: `serde` (serialize the config, seed included — a stored config replays bit-identically); `ndarray` (`fit_transform_array` taking `ArrayView2<f32>` → `Array2<f32>`).
 
 Deliberately out of scope: GPU, parametric/supervised UMAP, densMAP, plotting, unseeded code paths. The crate's identity is **small, auditable, deterministic** — generality is resisted on purpose.
 
