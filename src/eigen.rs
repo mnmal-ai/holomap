@@ -21,6 +21,9 @@ const DENSE_THRESHOLD: usize = 2000;
 /// `k` smallest eigenpairs, eigenvalues ascending; `vectors` is column-major
 /// `n × k`.
 pub struct EigenPairs {
+    /// Eigenvalues, ascending. The init path only consumes `vectors`; the
+    /// values are read by the parity tests (and kept for diagnostics).
+    #[allow(dead_code)]
     pub values: Vec<f64>,
     pub vectors: Vec<f64>,
 }

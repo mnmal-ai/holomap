@@ -1,0 +1,261 @@
+//! The public surface: a builder whose ONLY entry point takes a seed.
+//!
+//! `Holomap::builder(seed)` — there is no unseeded constructor and none
+//! will ever exist. Every knob mirrors umap-learn's defaults: 2 components,
+//! 15 neighbours, `min_dist` 0.1, `spread` 1.0, euclidean, auto epochs
+//! (500 up to 10k points, 200 above), spectral init.
+
+use crate::curve::find_ab_params;
+use crate::fuzzy::fuzzy_simplicial_set;
+use crate::knn::exact_knn;
+use crate::metric::Metric;
+use crate::rng::SeededRng;
+use crate::sgd::{default_n_epochs, optimize_embedding, schedule_edges};
+use crate::smooth_knn::smooth_knn;
+use crate::spectral::{Init, initial_embedding};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HolomapError {
+    /// `data` is empty or its length is not a multiple of `n_features`.
+    BadShape { len: usize, n_features: usize },
+    /// Fewer points than `n_neighbors + 1` — the kNN stage needs headroom.
+    TooFewPoints { n: usize, n_neighbors: usize },
+    /// A parameter failed validation (named in the message).
+    InvalidParameter(&'static str),
+}
+
+impl std::fmt::Display for HolomapError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BadShape { len, n_features } => write!(
+                f,
+                "data length {len} is not a positive multiple of n_features {n_features}"
+            ),
+            Self::TooFewPoints { n, n_neighbors } => write!(
+                f,
+                "need more than n_neighbors={n_neighbors} points, got {n}"
+            ),
+            Self::InvalidParameter(what) => write!(f, "invalid parameter: {what}"),
+        }
+    }
+}
+
+impl std::error::Error for HolomapError {}
+
+/// Configured reducer. Construct via [`Holomap::builder`].
+pub struct Holomap {
+    seed: u64,
+    n_components: usize,
+    n_neighbors: usize,
+    min_dist: f32,
+    spread: f32,
+    metric: Metric,
+    n_epochs: Option<usize>,
+    init: Init,
+}
+
+/// Builder — every field has a reference-default except the seed, which is
+/// the required entry argument.
+pub struct HolomapBuilder {
+    inner: Holomap,
+}
+
+impl Holomap {
+    pub fn builder(seed: u64) -> HolomapBuilder {
+        HolomapBuilder {
+            inner: Holomap {
+                seed,
+                n_components: 2,
+                n_neighbors: 15,
+                min_dist: 0.1,
+                spread: 1.0,
+                metric: Metric::Euclidean,
+                n_epochs: None,
+                init: Init::Spectral,
+            },
+        }
+    }
+
+    /// Embed `data` (row-major, `n_features` per row) into
+    /// `n_components` dimensions. Same input + same params + same seed →
+    /// bit-identical output.
+    pub fn fit_transform(&self, data: &[f32], n_features: usize) -> Result<Vec<f32>, HolomapError> {
+        // --- validation -----------------------------------------------------
+        if n_features == 0 || data.is_empty() || !data.len().is_multiple_of(n_features) {
+            return Err(HolomapError::BadShape {
+                len: data.len(),
+                n_features,
+            });
+        }
+        if self.n_components == 0 {
+            return Err(HolomapError::InvalidParameter("n_components must be >= 1"));
+        }
+        if self.n_neighbors < 2 {
+            return Err(HolomapError::InvalidParameter("n_neighbors must be >= 2"));
+        }
+        if self.spread.is_nan() || self.spread <= 0.0 {
+            return Err(HolomapError::InvalidParameter("spread must be > 0"));
+        }
+        if self.min_dist.is_nan() || self.min_dist < 0.0 {
+            return Err(HolomapError::InvalidParameter("min_dist must be >= 0"));
+        }
+        if self.n_epochs == Some(0) {
+            return Err(HolomapError::InvalidParameter("n_epochs must be >= 1"));
+        }
+        let n = data.len() / n_features;
+        if n <= self.n_neighbors {
+            return Err(HolomapError::TooFewPoints {
+                n,
+                n_neighbors: self.n_neighbors,
+            });
+        }
+
+        // --- the pipeline; RNG draw order is fixed: init noise, then SGD ----
+        let knn = exact_knn(data, n_features, self.n_neighbors, self.metric);
+        let calib = smooth_knn(&knn.dists, self.n_neighbors);
+        let graph = fuzzy_simplicial_set(&knn, &calib);
+
+        let n_epochs = self.n_epochs.unwrap_or_else(|| default_n_epochs(n));
+        let mut rng = SeededRng::new(self.seed);
+        let mut embedding = initial_embedding(
+            data,
+            n_features,
+            &graph,
+            self.n_components,
+            self.init,
+            &mut rng,
+        );
+
+        let (a, b) = find_ab_params(f64::from(self.spread), f64::from(self.min_dist));
+        let schedule = schedule_edges(&graph, n_epochs);
+        optimize_embedding(
+            &mut embedding,
+            self.n_components,
+            n,
+            &schedule,
+            n_epochs,
+            a,
+            b,
+            &mut rng,
+        );
+        Ok(embedding)
+    }
+}
+
+impl HolomapBuilder {
+    pub fn n_components(mut self, v: usize) -> Self {
+        self.inner.n_components = v;
+        self
+    }
+    pub fn n_neighbors(mut self, v: usize) -> Self {
+        self.inner.n_neighbors = v;
+        self
+    }
+    pub fn min_dist(mut self, v: f32) -> Self {
+        self.inner.min_dist = v;
+        self
+    }
+    pub fn spread(mut self, v: f32) -> Self {
+        self.inner.spread = v;
+        self
+    }
+    pub fn metric(mut self, v: Metric) -> Self {
+        self.inner.metric = v;
+        self
+    }
+    pub fn n_epochs(mut self, v: usize) -> Self {
+        self.inner.n_epochs = Some(v);
+        self
+    }
+    pub fn init(mut self, v: Init) -> Self {
+        self.inner.init = v;
+        self
+    }
+    pub fn build(self) -> Holomap {
+        self.inner
+    }
+
+    /// Convenience: build and fit in one chain.
+    pub fn fit_transform(self, data: &[f32], n_features: usize) -> Result<Vec<f32>, HolomapError> {
+        self.inner.fit_transform(data, n_features)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Three tight 5-d gaussian-ish blobs, 12 points each, deterministic.
+    fn blobs() -> Vec<f32> {
+        let centers = [[0.0_f32; 5], [10.0; 5], [-10.0; 5]];
+        let mut data = Vec::with_capacity(36 * 5);
+        for (c, center) in centers.iter().enumerate() {
+            for p in 0..12u32 {
+                for f in 0..5u32 {
+                    let h = (p * 31 + f * 7 + c as u32 * 131) % 17;
+                    data.push(center[f as usize] + 0.1 * h as f32 / 17.0);
+                }
+            }
+        }
+        data
+    }
+
+    #[test]
+    fn fit_transform_shape_and_finiteness() {
+        let data = blobs();
+        let emb = Holomap::builder(42)
+            .n_neighbors(5)
+            .fit_transform(&data, 5)
+            .unwrap();
+        assert_eq!(emb.len(), 36 * 2);
+        assert!(emb.iter().all(|x| x.is_finite()));
+    }
+
+    /// THE determinism contract, end to end.
+    #[test]
+    fn fit_transform_bit_identical_same_seed() {
+        let data = blobs();
+        let run = |seed: u64| {
+            Holomap::builder(seed)
+                .n_neighbors(5)
+                .n_epochs(50)
+                .fit_transform(&data, 5)
+                .unwrap()
+        };
+        assert_eq!(run(42), run(42), "same seed must be bit-identical");
+        assert_ne!(run(42), run(43), "different seeds must differ");
+    }
+
+    #[test]
+    fn rejects_bad_shapes_and_params() {
+        let data = blobs();
+        // length not a multiple of n_features
+        assert!(matches!(
+            Holomap::builder(1).fit_transform(&data[..7], 5),
+            Err(HolomapError::BadShape { .. })
+        ));
+        // empty data
+        assert!(matches!(
+            Holomap::builder(1).fit_transform(&[], 5),
+            Err(HolomapError::BadShape { .. })
+        ));
+        // too few points for the neighbourhood size
+        assert!(matches!(
+            Holomap::builder(1).n_neighbors(40).fit_transform(&data, 5),
+            Err(HolomapError::TooFewPoints { .. })
+        ));
+        // degenerate params
+        assert!(matches!(
+            Holomap::builder(1).n_components(0).fit_transform(&data, 5),
+            Err(HolomapError::InvalidParameter(_))
+        ));
+        assert!(matches!(
+            Holomap::builder(1).n_neighbors(1).fit_transform(&data, 5),
+            Err(HolomapError::InvalidParameter(_))
+        ));
+        assert!(matches!(
+            Holomap::builder(1).spread(0.0).fit_transform(&data, 5),
+            Err(HolomapError::InvalidParameter(_))
+        ));
+    }
+}

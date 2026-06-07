@@ -45,7 +45,10 @@ impl Csr {
 /// `S = D^{−1/2} W D^{−1/2}` so `L·x = x − S·x`.
 pub struct Laplacian {
     s: Csr,
-    /// Degree vector `d_i = Σ_j w_ij` (graph is symmetric).
+    /// Degree vector `d_i = Σ_j w_ij` (graph is symmetric). Read by tests
+    /// (the trivial eigenvector is `D^{1/2}·1`); production code only needs
+    /// it during construction.
+    #[allow(dead_code)]
     pub degrees: Vec<f64>,
 }
 
