@@ -21,6 +21,8 @@
 #[allow(dead_code)]
 mod components;
 #[allow(dead_code)]
+mod curve;
+#[allow(dead_code)]
 mod eigen;
 #[cfg(test)]
 mod fixture_parity;
@@ -35,6 +37,8 @@ mod knn;
 mod metric;
 #[allow(dead_code)]
 mod rng;
+#[allow(dead_code)]
+mod sgd;
 #[allow(dead_code)]
 mod smooth_knn;
 #[allow(dead_code)]
