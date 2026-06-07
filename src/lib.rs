@@ -18,6 +18,9 @@
 //! seeded SGD optimization → publish. Until then this crate is a
 //! determinism contract looking for its algorithm.
 
+mod knn;
+mod metric;
+
 /// Pinned so the determinism contract in the crate docs is testable from
 /// commit one: the CI determinism gate (run twice, compare raw bytes) will
 /// replace this with a real `fit_transform` double-run as soon as M3 lands.
