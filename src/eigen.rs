@@ -33,6 +33,12 @@ pub fn smallest_eigenpairs(lap: &Laplacian, k: usize) -> EigenPairs {
     }
 }
 
+/// Test-only handle to force the Lanczos path below the dense threshold.
+#[cfg(test)]
+pub fn lanczos_eigenpairs_for_test(lap: &Laplacian, k: usize) -> EigenPairs {
+    lanczos_eigenpairs(lap, k)
+}
+
 fn dense_eigenpairs(lap: &Laplacian, k: usize) -> EigenPairs {
     let n = lap.n();
     let m = nalgebra::DMatrix::from_column_slice(n, n, &lap.to_dense());
@@ -46,8 +52,8 @@ fn dense_eigenpairs(lap: &Laplacian, k: usize) -> EigenPairs {
     for (j, &col) in order.iter().take(k).enumerate() {
         values.push(eig.eigenvalues[col]);
         let v = &mut vectors[j * n..(j + 1) * n];
-        for i in 0..n {
-            v[i] = eig.eigenvectors[(i, col)];
+        for (i, x) in v.iter_mut().enumerate() {
+            *x = eig.eigenvectors[(i, col)];
         }
         canonical_sign(v);
     }
@@ -254,7 +260,7 @@ mod tests {
         }
         push(0, n as u32 / 2, 0.3);
         push(n as u32 / 4, 3 * n as u32 / 4, 0.2);
-        coo.sort_unstable_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+        coo.sort_unstable_by_key(|e| (e.0, e.1));
         Laplacian::new(&FuzzyGraph {
             n,
             rows: coo.iter().map(|e| e.0).collect(),

@@ -53,9 +53,9 @@ impl Laplacian {
     pub fn new(g: &FuzzyGraph) -> Laplacian {
         let mut s = Csr::from_fuzzy(g);
         let mut degrees = vec![0.0_f64; g.n];
-        for i in 0..g.n {
+        for (i, deg) in degrees.iter_mut().enumerate() {
             let (lo, hi) = (s.indptr[i], s.indptr[i + 1]);
-            degrees[i] = s.vals[lo..hi].iter().sum();
+            *deg = s.vals[lo..hi].iter().sum();
         }
         let inv_sqrt: Vec<f64> = degrees.iter().map(|&d| 1.0 / d.sqrt()).collect();
         for i in 0..g.n {
