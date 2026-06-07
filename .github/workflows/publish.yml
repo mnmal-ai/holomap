@@ -1,0 +1,72 @@
+name: publish
+
+# Trusted Publishing to crates.io via OIDC — no long-lived token.
+#
+# House convention (mirrors AgentRule #16): a release rides a `release/vX.Y.Z`
+# branch whose merge commit subject starts with `release: v`. Bump the version
+# in Cargo.toml on that branch; on merge this workflow publishes the crate,
+# then tags `vX.Y.Z` on the merge commit and pushes it. DO NOT tag manually —
+# the workflow owns the tag.
+#
+# crates.io side (one-time, web UI): crate Settings → Trusted Publishing → add
+#   Repository owner: mnmal-ai
+#   Repository name:  holomap
+#   Workflow filename: publish.yml
+#   Environment:       release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write   # tag + push the release tag
+  id-token: write   # OIDC token exchange for crates.io
+
+jobs:
+  publish:
+    # only on a release merge commit
+    if: "startsWith(github.event.head_commit.message, 'release: v')"
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # green-gate before anything irreversible
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo test --all-features
+
+      - name: Resolve crate version
+        id: ver
+        run: |
+          v=$(cargo metadata --no-deps --format-version 1 \
+                | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $v"
+
+      - name: Guard against re-tagging
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/v${VERSION}" >/dev/null 2>&1; then
+            echo "tag v${VERSION} already exists — nothing to do"
+            exit 1
+          fi
+
+      - name: Authenticate to crates.io (OIDC)
+        uses: rust-lang/crates-io-auth-action@bbd81622f20ce9e2dd9622e3218b975523e45bbe # v1.0.4
+        id: auth
+
+      - name: Publish
+        run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+      - name: Tag the release
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          git tag -a "v${VERSION}" -m "holomap v${VERSION}"
+          git push origin "v${VERSION}"
