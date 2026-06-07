@@ -32,8 +32,16 @@ pub fn exact_knn(data: &[f32], n_features: usize, k: usize, metric: Metric) -> K
         let a = &data[i * n_features..(i + 1) * n_features];
         row.clear();
         row.extend((0..n).map(|j| {
-            let b = &data[j * n_features..(j + 1) * n_features];
-            (dist(a, b), j as u32)
+            // self-distance is axiomatically zero — computing it through the
+            // metric can leave a ±ULP residue (cosine especially), which
+            // would poison Stage 2's first-non-zero rho rule
+            let d = if j == i {
+                0.0
+            } else {
+                let b = &data[j * n_features..(j + 1) * n_features];
+                dist(a, b)
+            };
+            (d, j as u32)
         }));
         // (distance, index) ordering — total_cmp keeps the sort total and
         // deterministic; ties broken by lower index
@@ -72,6 +80,18 @@ mod tests {
         assert_eq!(&knn.indices[0..2], &[0, 2]); // point 0: self wins tie
         assert_eq!(&knn.indices[4..6], &[0, 2]); // point 2: 0 precedes self
         assert_eq!(&knn.dists[4..6], &[0.0, 0.0]);
+    }
+
+    #[test]
+    fn knn_cosine_self_distance_exactly_zero() {
+        // cosine(a, a) through the metric leaves a ±ULP residue; the kNN
+        // layer must report the self slot as exactly 0.0 so rho's
+        // first-non-zero rule never grabs the epsilon
+        let data: [f32; 4] = [0.3, 0.7, 0.31, 0.69]; // nearly parallel pair
+        let knn = exact_knn(&data, 2, 2, Metric::Cosine);
+        assert_eq!(knn.dists[0], 0.0);
+        assert_eq!(knn.dists[2], 0.0);
+        assert!(knn.dists[1] > 0.0 && knn.dists[3] > 0.0);
     }
 
     #[test]

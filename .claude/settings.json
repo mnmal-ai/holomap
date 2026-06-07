@@ -1,0 +1,5 @@
+{
+  "env": {
+    "HYDRA_URL": "https://hydra.mnmal.ai:3100"
+  }
+}

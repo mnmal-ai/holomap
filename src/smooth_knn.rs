@@ -96,8 +96,11 @@ mod tests {
     }
 
     /// Oracle: umap-learn 0.5.12 smooth_knn_dist on 3 line points (0, 1, 3),
-    /// k=3 — values generated 2026-06-06 from the pinned reference.
+    /// k=3 — values generated 2026-06-06 from the pinned reference. The
+    /// sigma literals are exact decimal expansions of the float32 binary
+    /// search results — full precision is the point.
     #[test]
+    #[allow(clippy::excessive_precision)]
     fn matches_reference_on_line_points() {
         let dists = [0.0, 1.0, 3.0, 0.0, 1.0, 2.0, 0.0, 2.0, 3.0];
         let out = smooth_knn(&dists, 3);
