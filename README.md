@@ -69,7 +69,7 @@ let embedding = Holomap::builder(42)   // the seed is a required argument
     .fit_transform(&data, n_features)?;
 ```
 
-## Status: v0.1.0 — all milestones shipped
+## Status: v0.2.0 — shipped
 
 | | Milestone | Exit test | |
 |---|---|---|---|
@@ -77,6 +77,8 @@ let embedding = Holomap::builder(42)   // the seed is a required argument
 | M2 | spectral (Lanczos) initialization | eigenvector parity vs scipy; deterministic double-run | ✅ |
 | M3 | seeded SGD + end-to-end `fit_transform` | trustworthiness vs `umap-learn` on blobs/swiss-roll; bit-identity CI gate | ✅ |
 | M4 | API polish, docs, crates.io publish | | ✅ |
+
+**v0.2.0** adds: non-finite input rejection, an optional `ndarray` front door (`fit_transform_array`), a property-tested determinism invariant, and a cross-platform CI matrix (Linux/macOS/Windows) backing the parity claim with evidence.
 
 Measured (k=15 trustworthiness, same data, same params): blobs 0.954 vs
 umap-learn's 0.955; swiss roll 0.991 vs 0.990. Wall-clock at 1k×50-d points:
