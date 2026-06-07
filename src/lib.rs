@@ -13,10 +13,26 @@
 //!
 //! ## Status
 //!
-//! M1 + M2 landed: exact kNN + fuzzy simplicial set (parity-verified against
-//! umap-learn 0.5.12 fixtures) and spectral initialization (dense + Lanczos
-//! eigensolvers, parity-verified against scipy; bit-identical double-runs).
-//! Next: seeded SGD optimization → publish.
+//! M1–M3 landed: the full `fit_transform` pipeline — exact kNN + fuzzy
+//! simplicial set (parity-verified against umap-learn 0.5.12 fixtures),
+//! spectral initialization (dense + Lanczos eigensolvers, parity-verified
+//! against scipy), and seeded SGD. Quality gate: trustworthiness(k=15)
+//! within 0.05 of umap-learn on blobs and swiss roll. Determinism gate:
+//! byte-compared double runs. Next: API polish, docs, crates.io publish.
+//!
+//! ## Quick start
+//!
+//! ```
+//! use holomap::Holomap;
+//!
+//! // 40 points on a noisy 4-d lattice, row-major
+//! let data: Vec<f32> = (0..160).map(|i| (i % 7) as f32 + 0.01 * i as f32).collect();
+//! let embedding = Holomap::builder(42)      // seed is REQUIRED — by design
+//!     .n_neighbors(5)
+//!     .fit_transform(&data, 4)
+//!     .unwrap();
+//! assert_eq!(embedding.len(), 40 * 2);      // n_components defaults to 2
+//! ```
 
 mod api;
 mod components;

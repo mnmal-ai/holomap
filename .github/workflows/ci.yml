@@ -20,9 +20,9 @@ jobs:
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --all-features
 
-  # The reason this crate exists. Today it exercises the test suite twice;
-  # once M3 lands, fit_transform output bytes are compared across runs and
-  # any divergence fails the build.
+  # The reason this crate exists. The suite includes the byte-compared
+  # fit_transform double-run (tests/quality_gate.rs determinism_gate_double_run);
+  # running the whole suite twice additionally catches cross-process divergence.
   determinism:
     runs-on: ubuntu-latest
     steps:
