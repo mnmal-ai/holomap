@@ -90,7 +90,10 @@ mod tests {
     /// 3 line points (0, 1, 3), k=3 — kNN and rho/sigma as verified in the
     /// smooth_knn oracle test. Directed strengths: each point's nearest
     /// non-identical neighbour gets 1.0 (d == rho), the far edge gets
-    /// exp(-(d-rho)/sigma). Hand-derived t-conorm fusion below.
+    /// exp(-(d-rho)/sigma). Hand-derived t-conorm fusion below. Sigma
+    /// literals are exact decimal expansions of the reference's float32
+    /// values — full precision is the point.
+    #[allow(clippy::excessive_precision)]
     fn line_fixture() -> (Knn, SmoothKnn) {
         let knn = Knn {
             k: 3,
@@ -105,6 +108,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::excessive_precision)] // sigma0's exact f32 expansion
     fn symmetrizes_with_t_conorm_sorted_no_self_edges() {
         let (knn, calib) = line_fixture();
         let g = fuzzy_simplicial_set(&knn, &calib);

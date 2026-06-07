@@ -35,7 +35,9 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
         na += x * x;
         nb += y * y;
     }
-    (1.0 - dot / (na.sqrt() * nb.sqrt())) as f32
+    // clamp: cosine distance is mathematically >= 0, but near-parallel
+    // vectors can round to -ULP; scikit-learn clips identically
+    (1.0 - dot / (na.sqrt() * nb.sqrt())).max(0.0) as f32
 }
 
 #[cfg(test)]
