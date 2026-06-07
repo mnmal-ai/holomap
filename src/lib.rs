@@ -17,6 +17,8 @@
 //! against umap-learn 0.5.12 fixtures. Next: spectral (Lanczos)
 //! initialization → seeded SGD optimization → publish.
 
+#[allow(dead_code)]
+mod components;
 #[cfg(test)]
 mod fixture_parity;
 // the dead_code allows fall away at M3, when the public fit_transform
@@ -29,7 +31,11 @@ mod knn;
 #[allow(dead_code)]
 mod metric;
 #[allow(dead_code)]
+mod rng;
+#[allow(dead_code)]
 mod smooth_knn;
+#[allow(dead_code)]
+mod sparse;
 
 /// Pinned so the determinism contract in the crate docs is testable from
 /// commit one: the CI determinism gate (run twice, compare raw bytes) will
