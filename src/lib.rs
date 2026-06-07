@@ -18,46 +18,27 @@
 //! eigensolvers, parity-verified against scipy; bit-identical double-runs).
 //! Next: seeded SGD optimization → publish.
 
-#[allow(dead_code)]
+mod api;
 mod components;
-#[allow(dead_code)]
 mod curve;
-#[allow(dead_code)]
 mod eigen;
 #[cfg(test)]
 mod fixture_parity;
-// the dead_code allows fall away at M3, when the public fit_transform
-// builder wires the pipeline stages together; until then only the test
-// suite (unit + fixture-parity) drives them
-#[allow(dead_code)]
 mod fuzzy;
-#[allow(dead_code)]
 mod knn;
-#[allow(dead_code)]
 mod metric;
-#[allow(dead_code)]
 mod rng;
-#[allow(dead_code)]
 mod sgd;
-#[allow(dead_code)]
 mod smooth_knn;
-#[allow(dead_code)]
 mod sparse;
-#[allow(dead_code)]
 mod spectral;
 
-/// Pinned so the determinism contract in the crate docs is testable from
-/// commit one: the CI determinism gate (run twice, compare raw bytes) will
-/// replace this with a real `fit_transform` double-run as soon as M3 lands.
+pub use api::{Holomap, HolomapBuilder, HolomapError};
+pub use metric::Metric;
+pub use spectral::Init;
+
+/// The contract, stated as a constant since commit one. The real enforcement
+/// is the end-to-end double-run test on [`Holomap::fit_transform`] plus the
+/// CI determinism job (full test suite twice).
 pub const DETERMINISM_CONTRACT: &str =
     "same input + same params + same seed => bit-identical embedding";
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn contract_is_stated() {
-        assert!(DETERMINISM_CONTRACT.contains("bit-identical"));
-    }
-}

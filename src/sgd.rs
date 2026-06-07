@@ -64,6 +64,7 @@ pub fn schedule_edges(graph: &FuzzyGraph, n_epochs: usize) -> EdgeSchedule {
 /// Run the seeded SGD over `n_epochs`, mutating `embedding` (row-major
 /// `n_vertices × dim`) in place. `gamma`, `negative_sample_rate` and
 /// `initial_alpha` are the reference defaults (1.0, 5.0, 1.0).
+#[allow(clippy::too_many_arguments)] // mirrors the reference signature
 pub fn optimize_embedding(
     embedding: &mut [f32],
     dim: usize,
