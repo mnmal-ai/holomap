@@ -24,7 +24,15 @@ fn problem() -> impl Strategy<Value = (Vec<f32>, usize, usize, usize, u64, Metri
         .prop_flat_map(|(nf, k, n, seed, metric, init)| {
             // finite values only — a bounded f32 range never yields NaN/inf
             let data = prop::collection::vec(-100.0f32..100.0, n * nf);
-            (data, Just(nf), Just(k), Just(n), Just(seed), Just(metric), Just(init))
+            (
+                data,
+                Just(nf),
+                Just(k),
+                Just(n),
+                Just(seed),
+                Just(metric),
+                Just(init),
+            )
         })
 }
 

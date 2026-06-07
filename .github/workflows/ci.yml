@@ -9,24 +9,39 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable as of 2026-06-07
         with:
           components: rustfmt, clippy
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
+
+  # Cross-platform: same-platform bit-identity must hold on every OS (the
+  # in-suite double-run gate checks it per platform), and the structural
+  # quality gates back the README's "cross-platform structurally identical"
+  # claim with evidence rather than assertion. fail-fast off so one platform's
+  # result never hides another's.
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable as of 2026-06-07
       - run: cargo test --all-features
 
-  # The reason this crate exists. The suite includes the byte-compared
-  # fit_transform double-run (tests/quality_gate.rs determinism_gate_double_run);
-  # running the whole suite twice additionally catches cross-process divergence.
+  # The reason this crate exists. Runs the suite twice on the reference
+  # platform — the in-process determinism gate plus a second invocation for
+  # cross-process byte-stability.
   determinism:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable as of 2026-06-07
       - run: cargo test --all-features
       - run: cargo test --all-features
