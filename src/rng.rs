@@ -25,6 +25,11 @@ impl SeededRng {
         low + (high - low) * self.inner.random::<f32>()
     }
 
+    /// Uniform index in `[0, n)` — negative-sampling draws.
+    pub fn next_index(&mut self, n: usize) -> usize {
+        (self.inner.random::<u32>() as usize) % n
+    }
+
     /// Standard-normal draw scaled by `scale` (Box-Muller; no extra deps).
     pub fn normal(&mut self, scale: f32) -> f32 {
         // draw in f64 for the log/sqrt, emit f32 — u1 nudged away from 0
