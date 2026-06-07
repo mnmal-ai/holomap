@@ -13,6 +13,31 @@ pub enum Metric {
     Cosine,
 }
 
+impl std::str::FromStr for Metric {
+    type Err = crate::HolomapError;
+
+    /// Case-insensitive: `"euclidean"` or `"cosine"`. Added for CLI
+    /// consumers (first-consumer feedback from the coda gate harness).
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "euclidean" => Ok(Metric::Euclidean),
+            "cosine" => Ok(Metric::Cosine),
+            _ => Err(crate::HolomapError::InvalidParameter(
+                "metric must be \"euclidean\" or \"cosine\"",
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for Metric {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Metric::Euclidean => "euclidean",
+            Metric::Cosine => "cosine",
+        })
+    }
+}
+
 /// Euclidean distance between two equal-length vectors.
 pub fn euclidean(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(a.len(), b.len());
@@ -47,6 +72,21 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metric_parses_from_str_case_insensitive() {
+        assert_eq!("euclidean".parse::<Metric>().unwrap(), Metric::Euclidean);
+        assert_eq!("cosine".parse::<Metric>().unwrap(), Metric::Cosine);
+        assert_eq!("Cosine".parse::<Metric>().unwrap(), Metric::Cosine);
+        assert!("manhattan".parse::<Metric>().is_err());
+    }
+
+    #[test]
+    fn metric_display_round_trips_through_from_str() {
+        for m in [Metric::Euclidean, Metric::Cosine] {
+            assert_eq!(m.to_string().parse::<Metric>().unwrap(), m);
+        }
+    }
 
     #[test]
     fn euclidean_distance_known_values() {
