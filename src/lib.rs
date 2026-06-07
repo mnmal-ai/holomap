@@ -11,14 +11,14 @@
 //!
 //! There is no unseeded constructor. By design, none will ever exist.
 //!
-//! ## Status
+//! ## Validation
 //!
-//! M1–M3 landed: the full `fit_transform` pipeline — exact kNN + fuzzy
-//! simplicial set (parity-verified against umap-learn 0.5.12 fixtures),
-//! spectral initialization (dense + Lanczos eigensolvers, parity-verified
-//! against scipy), and seeded SGD. Quality gate: trustworthiness(k=15)
-//! within 0.05 of umap-learn on blobs and swiss roll. Determinism gate:
-//! byte-compared double runs. Next: API polish, docs, crates.io publish.
+//! Every stage is parity-verified against the references: exact kNN + fuzzy
+//! simplicial set vs umap-learn 0.5.12 fixtures, spectral initialization
+//! (dense + Lanczos eigensolvers) vs scipy, and the end-to-end embedding vs
+//! umap-learn's trustworthiness(k=15) on blobs and swiss roll (within 0.05;
+//! swiss roll edges the reference). The determinism gate byte-compares
+//! `fit_transform` double-runs in CI.
 //!
 //! ## Quick start
 //!

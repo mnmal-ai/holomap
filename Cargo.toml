@@ -6,7 +6,7 @@ rust-version = "1.93"
 license = "MIT OR Apache-2.0"
 description = "Deterministic UMAP — the bulk, on the boundary. Same input, same params, same seed: bit-identical embeddings."
 repository = "https://github.com/mnmal-ai/holomap"
-keywords = ["umap", "dimensionality-reduction", "deterministic", "embedding", "manifold"]
+keywords = ["umap", "dimension-reduction", "deterministic", "embedding", "manifold"]
 categories = ["science", "algorithms", "mathematics"]
 # publish whitelist: the crate ships source + docs only — no dev scripts,
 # fixtures, CI, or agent-context files
