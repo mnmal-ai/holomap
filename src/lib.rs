@@ -20,6 +20,7 @@
 
 mod knn;
 mod metric;
+mod smooth_knn;
 
 /// Pinned so the determinism contract in the crate docs is testable from
 /// commit one: the CI determinism gate (run twice, compare raw bytes) will
