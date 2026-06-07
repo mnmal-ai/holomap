@@ -20,9 +20,15 @@ use crate::metric::euclidean;
 use crate::rng::SeededRng;
 use crate::sparse::{Csr, Laplacian};
 
+/// Initialization strategy for the embedding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Init {
+    /// Laplacian-eigenmap initialization (the default) — deterministic
+    /// spectral structure plus seeded 1e-4 noise.
     Spectral,
+    /// Seeded uniform in [−10, 10). The fallback when spectral structure
+    /// isn't wanted.
     Random,
 }
 

@@ -8,7 +8,9 @@ description = "Deterministic UMAP — the bulk, on the boundary. Same input, sam
 repository = "https://github.com/mnmal-ai/holomap"
 keywords = ["umap", "dimensionality-reduction", "deterministic", "embedding", "manifold"]
 categories = ["science", "algorithms", "mathematics"]
-exclude = [".github/"]
+# publish whitelist: the crate ships source + docs only — no dev scripts,
+# fixtures, CI, or agent-context files
+include = ["src/**", "examples/**", "README.md", "LICENSE-APACHE", "LICENSE-MIT"]
 
 [dependencies]
 nalgebra = { version = "0.35.0", default-features = false, features = ["std"] }
@@ -22,3 +24,6 @@ serde_json = "1"
 [features]
 default = []
 serde = ["dep:serde"]
+
+[package.metadata.docs.rs]
+all-features = true
