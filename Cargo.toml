@@ -11,6 +11,7 @@ categories = ["science", "algorithms", "mathematics"]
 exclude = [".github/"]
 
 [dependencies]
+nalgebra = { version = "0.35.0", default-features = false, features = ["std"] }
 rand = { version = "0.9", default-features = false }
 rand_pcg = "0.9"
 serde = { version = "1", features = ["derive"], optional = true }

@@ -19,6 +19,8 @@
 
 #[allow(dead_code)]
 mod components;
+#[allow(dead_code)]
+mod eigen;
 #[cfg(test)]
 mod fixture_parity;
 // the dead_code allows fall away at M3, when the public fit_transform
