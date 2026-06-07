@@ -117,6 +117,110 @@ fn run_fixture(name: &str) {
     }
 }
 
+/// M2 exit gate: eigenpairs of the normalized Laplacian vs scipy eigsh
+/// (tol=1e-12 oracle) on a connected single-component fuzzy graph built by
+/// the full Stage-1/2 pipeline. Both eigen paths must match: the dense
+/// SymmetricEigen route AND the Lanczos route (forced explicitly — at n=60
+/// the dispatcher would pick dense).
+#[test]
+fn spectral_parity_vs_scipy() {
+    let path = format!(
+        "{}/tests/fixtures/spectral_cloud_connected.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let fixture: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+
+    let n = fixture["n_samples"].as_u64().unwrap() as usize;
+    let d = fixture["n_features"].as_u64().unwrap() as usize;
+    let k = fixture["n_neighbors"].as_u64().unwrap() as usize;
+    let dim = fixture["dim"].as_u64().unwrap() as usize;
+    let data: Vec<f32> = fixture["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|row| row.as_array().unwrap().iter())
+        .map(|x| x.as_f64().unwrap() as f32)
+        .collect();
+
+    let knn = exact_knn(&data, d, k, Metric::Euclidean);
+    let calib = smooth_knn(&knn.dists, k);
+    let graph = fuzzy_simplicial_set(&knn, &calib);
+    let lap = crate::sparse::Laplacian::new(&graph);
+
+    let expected_values = floats(&fixture["eigenvalues"]);
+    let expected_vectors: Vec<Vec<f64>> = fixture["eigenvectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(floats)
+        .collect();
+
+    for (label, pairs) in [
+        ("dense", crate::eigen::smallest_eigenpairs(&lap, dim + 1)),
+        (
+            "lanczos",
+            crate::eigen::lanczos_eigenpairs_for_test(&lap, dim + 1),
+        ),
+    ] {
+        for (j, (&a, &e)) in pairs.values.iter().zip(&expected_values).enumerate() {
+            assert!(
+                (a - e).abs() < 1e-6,
+                "{label} eigenvalue [{j}]: {a} vs scipy {e}"
+            );
+        }
+        for (j, expected) in expected_vectors.iter().enumerate().take(dim + 1) {
+            let ours = &pairs.vectors[j * n..(j + 1) * n];
+            let dot: f64 = ours.iter().zip(expected).map(|(x, y)| x * y).sum();
+            assert!(
+                dot.abs() > 1.0 - 1e-6,
+                "{label} eigenvector [{j}] misaligned: |cos| = {}",
+                dot.abs()
+            );
+        }
+    }
+}
+
+/// Determinism leg of the M2 gate: the full pipeline through spectral init
+/// is bit-identical across runs with the same seed, and differs with
+/// another seed (the 1e-4 noise must actually be seeded).
+#[test]
+fn spectral_init_double_run_bit_identity() {
+    let path = format!(
+        "{}/tests/fixtures/spectral_cloud_connected.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let fixture: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let d = fixture["n_features"].as_u64().unwrap() as usize;
+    let k = fixture["n_neighbors"].as_u64().unwrap() as usize;
+    let data: Vec<f32> = fixture["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|row| row.as_array().unwrap().iter())
+        .map(|x| x.as_f64().unwrap() as f32)
+        .collect();
+
+    let run = |seed: u64| -> Vec<f32> {
+        let knn = exact_knn(&data, d, k, Metric::Euclidean);
+        let calib = smooth_knn(&knn.dists, k);
+        let graph = fuzzy_simplicial_set(&knn, &calib);
+        let mut rng = crate::rng::SeededRng::new(seed);
+        crate::spectral::initial_embedding(
+            &data,
+            d,
+            &graph,
+            2,
+            crate::spectral::Init::Spectral,
+            &mut rng,
+        )
+    };
+    let a = run(42);
+    let b = run(42);
+    assert_eq!(a, b, "same seed must be bit-identical");
+    let c = run(43);
+    assert_ne!(a, c, "different seed must differ (noise is seeded)");
+}
+
 #[test]
 fn stage2_parity_blobs_euclidean() {
     run_fixture("blobs_euclidean");

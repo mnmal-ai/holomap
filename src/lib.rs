@@ -13,9 +13,10 @@
 //!
 //! ## Status
 //!
-//! M1 landed: exact kNN + fuzzy simplicial set, validated stage-by-stage
-//! against umap-learn 0.5.12 fixtures. Next: spectral (Lanczos)
-//! initialization → seeded SGD optimization → publish.
+//! M1 + M2 landed: exact kNN + fuzzy simplicial set (parity-verified against
+//! umap-learn 0.5.12 fixtures) and spectral initialization (dense + Lanczos
+//! eigensolvers, parity-verified against scipy; bit-identical double-runs).
+//! Next: seeded SGD optimization → publish.
 
 #[allow(dead_code)]
 mod components;
@@ -38,6 +39,8 @@ mod rng;
 mod smooth_knn;
 #[allow(dead_code)]
 mod sparse;
+#[allow(dead_code)]
+mod spectral;
 
 /// Pinned so the determinism contract in the crate docs is testable from
 /// commit one: the CI determinism gate (run twice, compare raw bytes) will
