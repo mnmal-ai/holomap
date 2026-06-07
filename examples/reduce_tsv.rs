@@ -157,12 +157,13 @@ fn parse_kw(args: &[String]) -> std::collections::HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
     let mut i = 0;
     while i < args.len() {
-        if let Some(key) = args[i].strip_prefix("--") {
-            if i + 1 < args.len() && !args[i + 1].starts_with("--") {
-                map.insert(key.to_lowercase(), args[i + 1].clone());
-                i += 2;
-                continue;
-            }
+        if let Some(key) = args[i].strip_prefix("--")
+            && i + 1 < args.len()
+            && !args[i + 1].starts_with("--")
+        {
+            map.insert(key.to_lowercase(), args[i + 1].clone());
+            i += 2;
+            continue;
         }
         i += 1;
     }
