@@ -18,6 +18,7 @@
 //! seeded SGD optimization → publish. Until then this crate is a
 //! determinism contract looking for its algorithm.
 
+mod fuzzy;
 mod knn;
 mod metric;
 mod smooth_knn;
