@@ -34,6 +34,8 @@
 //! assert_eq!(embedding.len(), 40 * 2);      // n_components defaults to 2
 //! ```
 
+#![warn(missing_docs)]
+
 mod api;
 mod components;
 mod curve;

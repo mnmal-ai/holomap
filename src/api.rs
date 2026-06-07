@@ -14,12 +14,23 @@ use crate::sgd::{default_n_epochs, optimize_embedding, schedule_edges};
 use crate::smooth_knn::smooth_knn;
 use crate::spectral::{Init, initial_embedding};
 
+/// Everything [`Holomap::fit_transform`] can reject.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HolomapError {
     /// `data` is empty or its length is not a multiple of `n_features`.
-    BadShape { len: usize, n_features: usize },
+    BadShape {
+        /// `data.len()` as received.
+        len: usize,
+        /// The `n_features` argument it failed to divide by.
+        n_features: usize,
+    },
     /// Fewer points than `n_neighbors + 1` — the kNN stage needs headroom.
-    TooFewPoints { n: usize, n_neighbors: usize },
+    TooFewPoints {
+        /// Number of points in `data`.
+        n: usize,
+        /// The configured neighbourhood size.
+        n_neighbors: usize,
+    },
     /// A parameter failed validation (named in the message).
     InvalidParameter(&'static str),
 }
@@ -43,6 +54,11 @@ impl std::fmt::Display for HolomapError {
 impl std::error::Error for HolomapError {}
 
 /// Configured reducer. Construct via [`Holomap::builder`].
+///
+/// With the `serde` feature, the full parameter set — including the seed —
+/// serializes, so a persisted config replays to a bit-identical embedding.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Holomap {
     seed: u64,
     n_components: usize,
@@ -56,11 +72,14 @@ pub struct Holomap {
 
 /// Builder — every field has a reference-default except the seed, which is
 /// the required entry argument.
+#[derive(Clone, Debug)]
 pub struct HolomapBuilder {
     inner: Holomap,
 }
 
 impl Holomap {
+    /// Start configuring a reducer. The seed is required here — it is the
+    /// only way in, and there is no unseeded alternative.
     pub fn builder(seed: u64) -> HolomapBuilder {
         HolomapBuilder {
             inner: Holomap {
@@ -143,34 +162,43 @@ impl Holomap {
 }
 
 impl HolomapBuilder {
+    /// Output dimensionality (default 2).
     pub fn n_components(mut self, v: usize) -> Self {
         self.inner.n_components = v;
         self
     }
+    /// Neighbourhood size for the kNN graph (default 15). Larger values
+    /// favour global structure, smaller values local detail.
     pub fn n_neighbors(mut self, v: usize) -> Self {
         self.inner.n_neighbors = v;
         self
     }
+    /// Minimum spacing between embedded points (default 0.1).
     pub fn min_dist(mut self, v: f32) -> Self {
         self.inner.min_dist = v;
         self
     }
+    /// Scale of the embedded cloud relative to `min_dist` (default 1.0).
     pub fn spread(mut self, v: f32) -> Self {
         self.inner.spread = v;
         self
     }
+    /// Distance metric for the kNN stage (default [`Metric::Euclidean`]).
     pub fn metric(mut self, v: Metric) -> Self {
         self.inner.metric = v;
         self
     }
+    /// Optimization epochs (default: 500 up to 10k points, 200 above).
     pub fn n_epochs(mut self, v: usize) -> Self {
         self.inner.n_epochs = Some(v);
         self
     }
+    /// Initialization strategy (default [`Init::Spectral`]).
     pub fn init(mut self, v: Init) -> Self {
         self.inner.init = v;
         self
     }
+    /// Finalize into a [`Holomap`].
     pub fn build(self) -> Holomap {
         self.inner
     }
@@ -209,6 +237,23 @@ mod tests {
             .unwrap();
         assert_eq!(emb.len(), 36 * 2);
         assert!(emb.iter().all(|x| x.is_finite()));
+    }
+
+    /// The `serde` feature serializes the full parameter set — including
+    /// the seed, so a persisted config replays to a bit-identical embedding.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn config_serde_round_trip() {
+        let data = blobs();
+        let config = Holomap::builder(42).n_neighbors(5).min_dist(0.2).build();
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("\"seed\":42"), "seed must serialize: {json}");
+        let back: Holomap = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            config.fit_transform(&data, 5).unwrap(),
+            back.fit_transform(&data, 5).unwrap(),
+            "round-tripped config must replay bit-identically"
+        );
     }
 
     /// THE determinism contract, end to end.

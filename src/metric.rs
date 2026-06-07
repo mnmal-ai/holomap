@@ -4,8 +4,12 @@
 
 /// Distance metric for the kNN stage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Metric {
+    /// Straight-line distance.
     Euclidean,
+    /// `1 − cos(a, b)` — magnitude-invariant, the usual choice for text
+    /// embeddings.
     Cosine,
 }
 
