@@ -68,5 +68,8 @@ jobs:
         env:
           VERSION: ${{ steps.ver.outputs.version }}
         run: |
+          # annotated tags need a committer identity, which the runner lacks
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "v${VERSION}" -m "holomap v${VERSION}"
           git push origin "v${VERSION}"
