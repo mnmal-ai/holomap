@@ -19,3 +19,14 @@ holomap = { version = "0.2", path = "../.." }
 [[bin]]
 name = "holomap-clusterer"
 path = "src/main.rs"
+
+[features]
+default = []
+wasm = ["dep:wasm-bindgen"]
+
+[dependencies.wasm-bindgen]
+version = "0.2"
+optional = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]

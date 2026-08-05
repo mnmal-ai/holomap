@@ -133,3 +133,20 @@ fn reduced_pipeline_is_deterministic_for_fixed_seed() {
     };
     assert_eq!(clusters, 3, "blob structure must survive reduction");
 }
+
+/// The wasm binding flattens a row-major input into the Vec<Vec<f32>> that
+/// run_pipeline takes. That reshape is the only logic the binding adds, so
+/// it is the only part worth testing on the native side — the wasm-specific
+/// behaviour is covered by the JS suite.
+#[test]
+fn flatten_reshapes_row_major_input() {
+    let flat = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let rows = holomap_clusterer::wasm::reshape(&flat, 3);
+    assert_eq!(rows, vec![vec![1.0, 2.0, 3.0], vec![4.0, 5.0, 6.0]]);
+}
+
+#[test]
+fn flatten_rejects_ragged_input() {
+    let flat = vec![1.0f32, 2.0, 3.0, 4.0, 5.0];
+    assert!(std::panic::catch_unwind(|| holomap_clusterer::wasm::reshape(&flat, 3)).is_err());
+}

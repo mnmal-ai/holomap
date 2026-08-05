@@ -4,3 +4,5 @@ __pycache__/
 # SDD scratch + worktrees (git-ignored working state, never committed)
 .superpowers/
 .worktrees/
+
+crates/holomap-clusterer/pkg/
