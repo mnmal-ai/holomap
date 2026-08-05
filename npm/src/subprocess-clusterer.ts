@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { type ClusterParams, type ClusterResult, ClustererError, type Clusterer, type ProtocolResponse } from './types.js';
+import { validateClusterInput } from './validation.js';
 
 export class SubprocessClusterer implements Clusterer {
   readonly #argv: readonly string[];
@@ -11,6 +12,15 @@ export class SubprocessClusterer implements Clusterer {
   }
 
   async cluster(vectors: readonly Float32Array[], params: ClusterParams): Promise<ClusterResult> {
+    // Reject the same inputs WasmClusterer rejects, with the same message,
+    // before spawning anything. Without this, bad input still gets rejected
+    // — the child validates empty input and ragged dimensions itself, and a
+    // bad seed either fails child-side JSON deserialisation or, worse, gets
+    // forwarded as a real seed and crashes the child — but every one of
+    // those paths costs a process spawn and produces a different message
+    // than the wasm backend gives for the identical input.
+    validateClusterInput(vectors, params);
+
     const request = JSON.stringify({
       protocol_version: 1,
       vectors: vectors.map((v) => [...v]),

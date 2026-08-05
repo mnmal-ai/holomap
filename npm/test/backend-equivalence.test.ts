@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SubprocessClusterer, WasmClusterer } from '../src/index.js';
+import { type ClusterParams, ClustererError, SubprocessClusterer, WasmClusterer } from '../src/index.js';
 
 const BIN = new URL('../../target/release/holomap-clusterer', import.meta.url).pathname;
 const PARAMS = { nComponents: 5, nNeighbors: 15, minClusterSize: 5, seed: 1234 };
@@ -45,5 +45,53 @@ describe('backend equivalence', () => {
 
     expect(count(wasm.assignments)).toBe(count(native.assignments));
     expect(Math.abs(noise(wasm.assignments) - noise(native.assignments))).toBeLessThanOrEqual(2);
+  });
+});
+
+/**
+ * A rejection is part of the `Clusterer` contract too: both backends
+ * implement the same interface, so a caller must get the same
+ * `ClustererError` for the same bad input regardless of which backend is
+ * configured. Before the shared validator existed, `SubprocessClusterer`
+ * forwarded bad input to the child process and surfaced whatever came back
+ * (a serde deserialisation error, or — for a seed above
+ * Number.MAX_SAFE_INTEGER — a raw process crash), which is both slower and a
+ * different error than `WasmClusterer` raises for the identical input.
+ *
+ * Each case below asks WasmClusterer what it throws (its behaviour is the
+ * fixed reference — this suite must never be the thing that changes it) and
+ * asserts SubprocessClusterer throws a `ClustererError` with the exact same
+ * message, without ever spawning a process that could fail for a different
+ * reason.
+ */
+async function rejection(
+  clusterer: { cluster(v: readonly Float32Array[], p: ClusterParams): Promise<unknown> },
+  vectors: readonly Float32Array[],
+  params: ClusterParams
+): Promise<ClustererError> {
+  try {
+    await clusterer.cluster(vectors, params);
+  } catch (e) {
+    if (e instanceof ClustererError) return e;
+    throw new Error(`expected a ClustererError, got ${e instanceof Error ? e.constructor.name : String(e)}: ${e}`);
+  }
+  throw new Error('expected cluster() to reject, but it resolved');
+}
+
+describe('backend rejection parity', () => {
+  const cases: Array<[name: string, vectors: readonly Float32Array[], params: ClusterParams]> = [
+    ['empty input', [], PARAMS],
+    ['ragged vector dimensions', [new Float32Array(8), new Float32Array(5)], PARAMS],
+    ['seed NaN', [new Float32Array(8)], { ...PARAMS, seed: Number.NaN }],
+    ['seed negative', [new Float32Array(8)], { ...PARAMS, seed: -1 }],
+    ['seed non-integer', [new Float32Array(8)], { ...PARAMS, seed: 1.5 }],
+    ['seed above Number.MAX_SAFE_INTEGER', [new Float32Array(8)], { ...PARAMS, seed: 2 ** 53 }]
+  ];
+
+  it.each(cases)('%s: both backends reject with the same message', async (_name, vectors, params) => {
+    const wasmError = await rejection(new WasmClusterer(), vectors, params);
+    const subprocessError = await rejection(new SubprocessClusterer([BIN]), vectors, params);
+
+    expect(subprocessError.message).toBe(wasmError.message);
   });
 });

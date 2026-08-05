@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ClustererError, WasmClusterer } from '../src/index.js';
+import { ClustererError, WASM_MAX_ROWS, WasmClusterer } from '../src/index.js';
 
 function blobs(): Float32Array[] {
   let state = 42n;
@@ -45,8 +45,8 @@ describe('WasmClusterer', () => {
     ).rejects.toThrow(/seed must be/);
   });
 
-  it('throws ClustererError above MAX_ROWS', async () => {
-    const many = Array.from({ length: 50_001 }, () => new Float32Array(2));
+  it('throws ClustererError above WASM_MAX_ROWS', async () => {
+    const many = Array.from({ length: WASM_MAX_ROWS + 1 }, () => new Float32Array(2));
     await expect(new WasmClusterer().cluster(many, PARAMS)).rejects.toThrow(/MAX_ROWS/);
   });
 });
