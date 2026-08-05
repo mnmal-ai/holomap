@@ -8,11 +8,11 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": { ".": { "import": "./dist/index.js", "types": "./dist/index.d.ts" } },
-  "files": ["dist", "wasm"],
+  "files": ["dist", "wasm", "LICENSE-MIT", "LICENSE-APACHE"],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "build:wasm": "bash ../scripts/build-wasm.sh",
-    "prepublishOnly": "bash ../scripts/build-wasm.sh",
+    "prepack": "pnpm build:wasm && pnpm build",
     "pretest": "test -f wasm/holomap_clusterer.js || { echo 'wasm artifact missing — run: pnpm build:wasm'; exit 1; }",
     "test": "vitest run",
     "check-types": "tsc -p tsconfig.json --noEmit"

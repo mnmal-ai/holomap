@@ -1,18 +1,22 @@
 //! Reference-corpus regression gate.
 //!
 //! The unit suite proves the code is wired correctly. This proves the
-//! PIPELINE still behaves: 36 clusters / 27.2% noise on the real 723-row
-//! corpus, the result the standalone holomap gate established 2026-06-07.
+//! PIPELINE still behaves: this crate's own all-Rust pipeline (holomap +
+//! `hdbscan`) produces 36 clusters / 30.0% noise on the real 723-row
+//! corpus. (A different figure, 27.2% noise, comes from a different
+//! clusterer entirely — see `pipeline.rs`'s module doc for the
+//! attribution — and is not this crate's own result.)
 //!
-//! Env-gated because the fixture is 9.4 MB and lives outside this repo.
-//! Unset HOLOMAP_CLUSTERER_FIXTURE and this skips, exactly like hydra's
-//! POSTGRES_URL-gated suites.
+//! Env-gated because the fixture is 9.4 MB and lives outside this repo: a
+//! 799-row TSV export of the Claude corpus described in coda's MVD (6
+//! tab-separated columns; col 5 is the text, used to exclude the 76
+//! synthetic perf fixtures; col 6 is a JSON array of 1024 bge-m3 floats).
+//! Point HOLOMAP_CLUSTERER_FIXTURE at your local copy of that export;
+//! unset it and this skips, exactly like hydra's POSTGRES_URL-gated
+//! suites:
 //!
-//!   HOLOMAP_CLUSTERER_FIXTURE=/mnt/data/Develop/coda-fixtures/2026-06-05-claude-corpus-799.tsv \
+//!   HOLOMAP_CLUSTERER_FIXTURE=/path/to/2026-06-05-claude-corpus-799.tsv \
 //!     cargo test -p holomap-clusterer --test fixture_regression -- --nocapture
-//!
-//! Fixture format: 6 tab-separated columns; col 5 is the text (used to
-//! exclude synthetic rows), col 6 is a JSON array of 1024 floats.
 
 use holomap_clusterer::pipeline::run_pipeline;
 use holomap_clusterer::protocol::{Params, Request, PROTOCOL_VERSION};

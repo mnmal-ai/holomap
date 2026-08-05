@@ -19,9 +19,14 @@
 //! analysis and the FALLBACK-Python verdict.
 //!
 //! holomap (rev 71810a1) is the project's own seedable UMAP-class Rust crate.
-//! The standalone gate (2026-06-07) produced 36 clusters / 27.2% noise / 7-8
-//! coherent qualitative samples / byte-identical determinism / 2.46 s — all
-//! hard gates green.  That result reopens the GO-Rust path.
+//! The standalone gate (`coda/scripts/phase0-clusterer-spike/holomap_gate.py`,
+//! 2026-06-07) — which reduces with holomap but clusters with sklearn's
+//! HDBSCAN, a different clusterer from the one this crate uses — produced 36
+//! clusters / 27.2% noise / 7-8 coherent qualitative samples / byte-identical
+//! determinism / 2.46 s — all hard gates green.  That result reopens the
+//! GO-Rust path. This crate's own all-Rust pipeline (holomap + the `hdbscan`
+//! crate) reproduces 36 clusters / 30.0% noise on the same corpus — see
+//! `tests/fixture_regression.rs`.
 //!
 //! ## Pipeline metric
 //!
@@ -40,10 +45,13 @@
 //! holomap defaults: n_components=2, n_neighbors=15, min_dist=0.1, metric=Euclidean.
 //! We override n_components, n_neighbors, metric, and seed from the protocol params.
 //! min_dist is left at holomap's default (0.1) — NOT 0.0 — because the
-//! standalone gate confirmed 0.1 passes the hard gates (36/27.2%) while 0.0
-//! regresses (13/45.2%).  holomap's SGD schedule handles the zero-min-dist
-//! edge case differently from umap-learn's.  spread (1.0) and n_epochs (auto)
-//! match umap-learn's defaults and are left at holomap's defaults.
+//! standalone sklearn-HDBSCAN gate (see attribution above) confirmed 0.1
+//! passes the hard gates (36/27.2%) while 0.0 regresses (13/45.2%); this
+//! crate's own all-Rust pipeline agrees at 36/30.0% (see
+//! `tests/fixture_regression.rs`).  holomap's SGD schedule handles the
+//! zero-min-dist edge case differently from umap-learn's.  spread (1.0) and
+//! n_epochs (auto) match umap-learn's defaults and are left at holomap's
+//! defaults.
 //!
 //! ## Determinism contract
 //!
@@ -140,10 +148,14 @@ fn l2_normalise(vecs: &[Vec<f32>]) -> Vec<Vec<f32>> {
 /// Parameter choices:
 /// - metric = Cosine: corpus embeddings are bge-m3 / L2-normalised; cosine is
 ///   the natural distance for text embeddings and matches the Python baseline.
-/// - min_dist = 0.1 (holomap default): the standalone holomap gate
-///   (holomap_gate.py, 2026-06-07) confirmed that min_dist=0.1 produces
-///   36 clusters / 27.2% noise (all hard gates green). Setting min_dist=0.0
-///   to match the Python baseline's umap-learn call degrades to 13 / 45.2%
+/// - min_dist = 0.1 (holomap default): the standalone gate
+///   (`coda/scripts/phase0-clusterer-spike/holomap_gate.py`, 2026-06-07 —
+///   holomap reduction + sklearn's HDBSCAN, not this crate's clusterer)
+///   confirmed that min_dist=0.1 produces 36 clusters / 27.2% noise (all
+///   hard gates green). This crate's own all-Rust pipeline (holomap +
+///   the `hdbscan` crate) reproduces 36 clusters / 30.0% noise at the same
+///   setting — see `tests/fixture_regression.rs`. Setting min_dist=0.0 to
+///   match the Python baseline's umap-learn call degrades to 13 / 45.2%
 ///   — holomap's SGD schedule and the Python umap-learn schedule differ in
 ///   how they handle the zero-min-dist edge case, so the holomap default is
 ///   the correct setting here (not 0.0).

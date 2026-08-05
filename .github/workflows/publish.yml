@@ -35,8 +35,8 @@ jobs:
 
       # green-gate before anything irreversible
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets --all-features -- -D warnings
-      - run: cargo test --all-features
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --workspace --all-features
 
       - name: Resolve crate version
         id: ver
