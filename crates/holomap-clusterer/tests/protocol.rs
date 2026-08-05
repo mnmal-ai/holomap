@@ -123,7 +123,10 @@ fn reduced_pipeline_is_deterministic_for_fixed_seed() {
     let a = holomap_clusterer::pipeline::run_pipeline(&make_req());
     let b = holomap_clusterer::pipeline::run_pipeline(&make_req());
     assert!(a.error.is_none(), "{:?}", a.error);
-    assert_eq!(a.assignments, b.assignments, "same seed must give identical labels");
+    assert_eq!(
+        a.assignments, b.assignments,
+        "same seed must give identical labels"
+    );
     // and the structure should still be recoverable after reduction
     let clusters = {
         let mut l = a.assignments.clone();

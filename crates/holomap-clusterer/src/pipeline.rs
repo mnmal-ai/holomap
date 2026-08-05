@@ -93,7 +93,12 @@ pub fn run_pipeline(req: &Request) -> Response {
         // No reduction: cluster the normalised vectors directly.
         normed
     } else {
-        match holomap_reduce(&normed, req.params.n_components, req.params.n_neighbors, req.params.seed) {
+        match holomap_reduce(
+            &normed,
+            req.params.n_components,
+            req.params.n_neighbors,
+            req.params.seed,
+        ) {
             Ok(v) => v,
             Err(e) => return error_response(format!("holomap reduction failed: {e}")),
         }
@@ -187,7 +192,10 @@ fn holomap_reduce(
 
     // Reshape flat output (n_samples * n_components) → Vec<Vec<f32>>.
     // chunks_exact on an n_samples*n_components slice yields exactly n_samples rows
-    Ok(embedding.chunks_exact(n_components).map(|chunk| chunk.to_vec()).collect())
+    Ok(embedding
+        .chunks_exact(n_components)
+        .map(|chunk| chunk.to_vec())
+        .collect())
 }
 
 fn error_response(msg: String) -> Response {
