@@ -326,7 +326,7 @@ Expose `run_pipeline` to JS behind a `wasm` feature, leaving the native crate an
 - Create: `crates/holomap-clusterer/src/wasm.rs`
 
 **Interfaces:**
-- Produces: wasm export `reduce_and_cluster(vectors: Float32Array, n_rows: u32, n_features: u32, n_components: u32, n_neighbors: u32, min_cluster_size: u32, seed: f64) -> Int32Array`. Throws a JS `Error` on failure. `seed` is `f64` because JS numbers are doubles; the binding casts to `u64`.
+- Produces: wasm export `reduce_and_cluster(vectors: &[f32], n_features: usize, n_components: usize, n_neighbors: usize, min_cluster_size: usize, seed: f64) -> Result<Vec<i32>, JsError>` — six parameters. `n_rows` is NOT a parameter; it is derived as `vectors.len() / n_features`. `seed` is `f64` because JS numbers are doubles; the binding casts to `u64`, and that cast saturates — NaN and negatives become 0, and values above 2^53 lose precision. Task 5's TypeScript layer guards this.
 
 - [ ] **Step 1: Add the feature and dependency**
 
@@ -829,6 +829,12 @@ describe('WasmClusterer', () => {
     await expect(new WasmClusterer().cluster(ragged, PARAMS)).rejects.toThrow(ClustererError);
   });
 
+  it.each([Number.NaN, -1, 1.5, 2 ** 53])('rejects seed %p rather than coercing it', async (seed) => {
+    await expect(
+      new WasmClusterer().cluster(blobs(), { ...PARAMS, seed })
+    ).rejects.toThrow(/seed must be/);
+  });
+
   it('throws ClustererError above MAX_ROWS', async () => {
     const many = Array.from({ length: 50_001 }, () => new Float32Array(2));
     await expect(new WasmClusterer().cluster(many, PARAMS)).rejects.toThrow(/MAX_ROWS/);
@@ -895,6 +901,17 @@ export class WasmClusterer implements Clusterer {
     const nFeatures = vectors[0]!.length;
     if (vectors.some((v) => v.length !== nFeatures)) {
       throw new ClustererError('vector dimensions inconsistent');
+    }
+
+    // The Rust binding takes seed as f64 and casts to u64. That cast
+    // saturates: NaN and negatives silently become 0, and anything above
+    // 2^53 has already lost precision as a JS number. A seed that quietly
+    // becomes a different seed is the worst failure this API can have —
+    // determinism is the whole product — so reject rather than coerce.
+    if (!Number.isInteger(params.seed) || params.seed < 0 || params.seed > Number.MAX_SAFE_INTEGER) {
+      throw new ClustererError(
+        `seed must be a non-negative integer <= 2^53-1, got ${params.seed}`
+      );
     }
 
     // Flatten to row-major. One copy — negligible beside an O(N^2*d) kNN,
