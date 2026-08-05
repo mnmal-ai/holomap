@@ -1,2 +1,6 @@
 /target
 __pycache__/
+
+# SDD scratch + worktrees (git-ignored working state, never committed)
+.superpowers/
+.worktrees/
