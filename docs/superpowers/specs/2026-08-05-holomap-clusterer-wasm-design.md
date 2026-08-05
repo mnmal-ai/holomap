@@ -129,7 +129,20 @@ export class SubprocessClusterer implements Clusterer { }  // spawns a native bi
 
 **`run_pipeline` is not refactored for this.** One `Vec` allocation per row — 723 on the reference corpus, 50k at the ceiling — is not the bottleneck beside the quadratic kNN. A flat-input core is a fair later optimisation if profiling justifies it; doing it now means changing tested production code for a hypothetical.
 
-**Build with `-C target-feature=+simd128`.** holomap's hot path is plain scalar Rust — no SIMD intrinsics, no `wide::`, `exact_knn` is a scalar distance loop plus a sort — so the usual wasm cliffs (missing intrinsics, missing threads) do not apply here. But native LLVM *auto-vectorises* that loop to AVX and wasm will not without `+simd128`. Omitting the flag would widen the gap for no reason.
+**Build with `-C target-feature=+simd128` — but not for the reason originally given.** The rationale here was that native LLVM auto-vectorises `exact_knn`'s scalar distance loop to AVX and wasm would not without the flag, so omitting it would widen the gap. **Measured 2026-08-05, that is not observable on this workload.** With the wasm module warmed before timing, n=723 is identical to three significant figures with and without the flag (2.4 s both), and n=10k differs by ~2.2% single-shot — noise, not signal.
+
+The flag stays because it is free and may matter on other hosts or larger inputs, but no performance claim should rest on it. The real, measured cost of choosing wasm over the subprocess is below.
+
+### Measured backend cost
+
+Same host, same corpus shape, wasm warmed before timing; n=723 is a median of three runs, n=10k single-shot:
+
+| Backend | n=723 | n=10,000 |
+|---|---|---|
+| `WasmClusterer` | 2.4 s | 53.6 s |
+| `SubprocessClusterer` | 1.3 s | 30.5 s |
+
+**Choosing wasm costs roughly 1.8×.** Both clear the 300 s gate with ~5.6× headroom at 10k. For context, coda's real corpus is 723 rows and 10k is estimated at roughly a year of accumulation — so at realistic sizes the absolute difference is about a second.
 
 **Errors throw.** `Response.error` is in-band by design for the sidecar's per-line contract, but a JS method resolving to a result object carrying an error field invites callers to ignore it. `WasmClusterer` throws `ClustererError` with the crate's message, matching what `SubprocessClusterer` already does.
 

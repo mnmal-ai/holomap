@@ -491,7 +491,7 @@ ls -la pkg/
 
 Expected: `pkg/holomap_clusterer_bg.wasm`, `pkg/holomap_clusterer.js`, `pkg/holomap_clusterer.d.ts`.
 
-`+simd128` matters: holomap's hot path is plain scalar Rust, so the usual wasm cliffs (missing intrinsics, missing threads) do not apply — but native LLVM auto-vectorises `exact_knn`'s distance loop to AVX and wasm will not without this flag.
+`+simd128` is kept because it is free, NOT because it was measured to help: with the module warmed before timing, n=723 is identical with and without it and n=10k differs ~2.2% single-shot. Do not restate the auto-vectorisation rationale as if it were established.
 
 - [ ] **Step 7: Gitignore the build output**
 
