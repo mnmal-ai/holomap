@@ -49,4 +49,18 @@ describe('WasmClusterer', () => {
     const many = Array.from({ length: WASM_MAX_ROWS + 1 }, () => new Float32Array(2));
     await expect(new WasmClusterer().cluster(many, PARAMS)).rejects.toThrow(/MAX_ROWS/);
   });
+
+  // Empirically-established boundary (see contracts-report.md fix-round):
+  // the `hdbscan` crate clamps any minClusterSize below 2 up to 2, then
+  // panics if row count < that effective minimum. Confirmed identical on
+  // both nComponents=0 (direct) and nComponents>0 (reduction) paths. On
+  // wasm the panic traps as an opaque JS "unreachable" error rather than a
+  // descriptive one — this asserts the guard replaces that with a real
+  // message instead.
+  it('rejects fewer rows than minClusterSize instead of trapping', async () => {
+    const tooFew = [new Float32Array(8), new Float32Array(8)]; // 2 rows, minClusterSize 5
+    await expect(
+      new WasmClusterer().cluster(tooFew, { ...PARAMS, minClusterSize: 5 })
+    ).rejects.toThrow(/too few rows/);
+  });
 });

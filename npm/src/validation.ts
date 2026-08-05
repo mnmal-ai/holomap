@@ -31,4 +31,23 @@ export function validateClusterInput(vectors: readonly Float32Array[], params: C
   if (!Number.isInteger(params.seed) || params.seed < 0 || params.seed > Number.MAX_SAFE_INTEGER) {
     throw new ClustererError(`seed must be a non-negative integer <= 2^53-1, got ${params.seed}`);
   }
+
+  // The `hdbscan` crate (both backends run the same crate — wasm in-process,
+  // subprocess out-of-process) silently clamps any minClusterSize below 2 up
+  // to 2 (its own internal floor), then panics — an out-of-bounds index in
+  // its core-distance computation — if row count is below that *effective*
+  // minimum. Empirically confirmed by direct experiment against the built
+  // binary: the boundary is exactly `rows < max(minClusterSize, 2)`,
+  // identical whether nComponents is 0 (cluster the raw vectors) or > 0
+  // (cluster after a holomap reduction) — the reduction stage runs before
+  // HDBSCAN either way and doesn't change row count. Below the boundary,
+  // wasm surfaces an opaque JS "unreachable" trap and the subprocess crashes
+  // the child process outright (exit 101); this rejects cleanly instead, on
+  // both backends, before either one is invoked.
+  const effectiveMinClusterSize = Math.max(params.minClusterSize, 2);
+  if (vectors.length < effectiveMinClusterSize) {
+    throw new ClustererError(
+      `too few rows: got ${vectors.length}, need at least ${effectiveMinClusterSize} for minClusterSize ${params.minClusterSize}`
+    );
+  }
 }

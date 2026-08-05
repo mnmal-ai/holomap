@@ -48,9 +48,17 @@ export interface Clusterer {
  *
  * This value is kept in sync with `wasm.rs::MAX_ROWS` by hand — it is not
  * read from the wasm binary. `test/wasm-clusterer.test.ts` generates
- * `WASM_MAX_ROWS + 1` rows and asserts the wasm call itself rejects them, so
- * a drift between the two shows up as a test failure rather than a silently
- * wrong number here.
+ * `WASM_MAX_ROWS + 1` rows and asserts the wasm call itself rejects them.
+ * That only catches drift in ONE direction: it fails if this constant is
+ * (or becomes) too LOW relative to the real Rust limit — the test would
+ * generate a row count the real binary happily accepts, and the
+ * `.rejects` assertion would fail. It does NOT catch this constant being
+ * too HIGH relative to the real limit (e.g. if `wasm.rs::MAX_ROWS` is ever
+ * lowered and this constant isn't updated to match): `wasm.rs` checks
+ * `n_rows > MAX_ROWS`, so `WASM_MAX_ROWS + 1` rows still exceeds a lower
+ * real threshold too, wasm still rejects, and the test still passes —
+ * silently masking the drift. Trust this constant no further than that: an
+ * upper bound believed accurate, not one verified in both directions.
  */
 export const WASM_MAX_ROWS = 50_000;
 

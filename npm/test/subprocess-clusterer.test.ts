@@ -34,4 +34,20 @@ describe('SubprocessClusterer', () => {
   it('throws ClustererError on an empty argv', () => {
     expect(() => new SubprocessClusterer([])).toThrow(ClustererError);
   });
+
+  // Empirically-established boundary (see contracts-report.md fix-round):
+  // the `hdbscan` crate clamps any minClusterSize below 2 up to 2, then
+  // panics if row count < that effective minimum — reproduced directly
+  // against the built binary with `seed: 42` (a valid seed), confirming the
+  // crash is triggered by row count vs. minClusterSize, not by the seed.
+  // Without a pre-spawn guard this crashes the child process (exit 101,
+  // a Rust panic in hdbscan's core-distance computation) instead of
+  // raising a ClustererError.
+  it('rejects fewer rows than minClusterSize instead of crashing the child', async () => {
+    const clusterer = new SubprocessClusterer([BIN]);
+    const tooFew = [new Float32Array(8), new Float32Array(8)]; // 2 rows, minClusterSize 5
+    await expect(
+      clusterer.cluster(tooFew, { nComponents: 0, nNeighbors: 15, minClusterSize: 5, seed: 42 })
+    ).rejects.toThrow(/too few rows/);
+  });
 });
