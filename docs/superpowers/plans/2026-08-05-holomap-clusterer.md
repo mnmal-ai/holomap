@@ -14,7 +14,7 @@
 
 - **Behaviour-preserving move.** `run_pipeline` logic does not change. Any diff to `pipeline.rs` beyond the crate rename in `use` paths is a defect.
 - **`min_samples` stays unset.** `hdbscan` then defaults it to `min_cluster_size`, matching sklearn. Setting it to `n_neighbors` collapsed the reference corpus from 36 clusters to 8.
-- **`min_dist` stays at holomap's default 0.1 — NOT 0.0.** Setting 0.0 to match the umap-learn baseline regresses the reference corpus from 36 clusters / 27.2% noise to **13 / 45.2%**. holomap's SGD schedule handles the zero-min-dist edge case differently from umap-learn's.
+- **`min_dist` stays at holomap's default 0.1 — NOT 0.0.** Setting 0.0 to match the umap-learn baseline regresses the corpus to **13 clusters / 45.2% noise** (sklearn-clustered figures — see Task 2 for the all-Rust baseline). holomap's SGD schedule handles the zero-min-dist edge case differently from umap-learn's.
 - **`hdbscan` keeps `default-features = false, features = ["serial"]`.** Enabling rayon admits thread-scheduling non-determinism.
 - **`probabilities` is always `None`.** `hdbscan` 0.12's `.cluster()` returns labels only. Do not invent a value for it.
 - **Errors stay in-band in Rust** (`Response.error`), and **throw in JS** (`ClustererError`).
@@ -172,7 +172,7 @@ Written by [mnmal-ai-claude](https://github.com/mnmal-ai-claude) with [Claude Co
 
 ### Task 2: Reference-corpus regression gate
 
-The 6 unit tests prove the code moved. They do not prove the *pipeline* still produces 36 clusters / 27.2% noise on real data. This adds that gate, env-gated so the 9.4 MB fixture never enters the repo.
+The 6 unit tests prove the code moved. They do not prove the *pipeline* still produces the right answer on real data. This adds that gate, env-gated so the 9.4 MB fixture never enters the repo.
 
 **Files:**
 - Create: `crates/holomap-clusterer/tests/fixture_regression.rs`
@@ -188,8 +188,14 @@ The 6 unit tests prove the code moved. They do not prove the *pipeline* still pr
 //! Reference-corpus regression gate.
 //!
 //! The unit suite proves the code is wired correctly. This proves the
-//! PIPELINE still behaves: 36 clusters / 27.2% noise on the real 723-row
-//! corpus, the result the standalone holomap gate established 2026-06-07.
+//! PIPELINE still behaves on the real 723-row corpus. Baseline for THIS
+//! all-Rust pipeline: 36 clusters / 30.0% noise (measured 2026-08-05).
+//!
+//! The widely-quoted 36 / 27.2% is a DIFFERENT binding — holomap_gate.py
+//! reduces with holomap then clusters with sklearn's HDBSCAN. Same
+//! reduction, different clusterer, so the cluster count matches exactly
+//! and the noise fraction differs by ~3 points. Do not treat 27.2% as
+//! this pipeline's number.
 //!
 //! Env-gated because the fixture is 9.4 MB and lives outside this repo.
 //! Unset HOLOMAP_CLUSTERER_FIXTURE and this skips, exactly like hydra's
@@ -287,7 +293,7 @@ HOLOMAP_CLUSTERER_FIXTURE=/mnt/data/Develop/coda-fixtures/2026-06-05-claude-corp
   cargo test -p holomap-clusterer --test fixture_regression -- --nocapture
 ```
 
-Expected: PASS, printing `clusters=36 noise=27.2%` or values inside the gate bands. **If clusters is 13 and noise ~45%, `min_dist` has been changed to 0.0 — revert it to holomap's default.** If clusters is 8, `min_samples` has been set — unset it.
+Expected: PASS, printing `clusters=36 noise=30.0%` or values inside the gate bands. (27.2% is the sklearn-clustered figure for the same reduction — not this pipeline's.) **If clusters is 13 and noise ~45%, `min_dist` has been changed to 0.0 — revert it to holomap's default.** If clusters is 8, `min_samples` has been set — unset it.
 
 - [ ] **Step 4: Commit**
 
@@ -296,8 +302,8 @@ git add crates/holomap-clusterer/tests/fixture_regression.rs
 git commit -m "test: reference-corpus regression gate for the clusterer pipeline
 
 The unit suite proves the code moved. This proves the pipeline still
-behaves — 36 clusters / 27.2% noise on the real 723-row corpus, the
-result the standalone holomap gate established 2026-06-07.
+behaves — 36 clusters / 30.0% noise on the real 723-row corpus, the
+first recorded baseline for the all-Rust pipeline.
 
 Env-gated on HOLOMAP_CLUSTERER_FIXTURE so the 9.4 MB fixture stays out
 of the repo, mirroring hydra's POSTGRES_URL-gated suites. Asserts the
@@ -1312,7 +1318,7 @@ Coda is the proving ground — it has the seam, the reference corpus, and a know
 
 **Spec coverage.** Move + rename + relicense → Task 1. Behaviour preservation → Tasks 1–2. wasm binding, `+simd128`, `MAX_ROWS`, throwing errors, no top-level side effects → Tasks 3, 5. npm package with both backends → Tasks 4–5. Gate 1 → Task 2; gates 2 and 4 → Task 5; gate 3 → Task 6; gate 5 → Task 6. CI → Task 7. Publish → Task 8. Coda migration and proving ground → Task 9.
 
-**One gap found and closed while writing:** the spec listed two must-survive behaviours (`min_samples` unset, `probabilities` always `None`). Reading `pipeline.rs` surfaced a **third** — `min_dist` stays at holomap's default 0.1, because 0.0 regresses the reference corpus from 36 clusters / 27.2% noise to 13 / 45.2%. It is now in Global Constraints and called out in Task 2's failure diagnosis.
+**One gap found and closed while writing:** the spec listed two must-survive behaviours (`min_samples` unset, `probabilities` always `None`). Reading `pipeline.rs` surfaced a **third** — `min_dist` stays at holomap's default 0.1, because 0.0 regresses the corpus to 13 clusters / 45.2% noise. It is now in Global Constraints and called out in Task 2's failure diagnosis.
 
 **Not covered by any task, by design:** backend identity in persisted provenance. That belongs to the consumer, and lands with hydra-recall's `recall/Cluster` type in project B.
 

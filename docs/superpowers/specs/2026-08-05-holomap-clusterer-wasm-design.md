@@ -59,13 +59,20 @@ The binding is config-driven — `CODA_DYNAMICS_CLUSTERER` argv, defaulting to t
 
 **`min_samples` is deliberately unset.** The `hdbscan` crate then defaults it to `min_cluster_size`, matching sklearn's `HDBSCAN(min_cluster_size=5)`. The in-code comment records that setting it to `n_neighbors` collapsed the reference corpus from **36 clusters to 8**, and that the earlier wiring was a cross-binding inconsistency with `clusterer.py`. Hard-won, not an oversight.
 
-**`min_dist` stays at holomap's default 0.1 — not 0.0.** The Python baseline calls `UMAP(min_dist=0.0)`, so matching it looks like the obviously correct thing to do. It is not: the standalone gate measured 0.0 regressing the reference corpus from 36 clusters / 27.2% noise to **13 / 45.2%**, because holomap's SGD schedule handles the zero-min-dist edge case differently from umap-learn's. This is the trap in the crate — the "consistency fix" that silently halves cluster yield.
+**`min_dist` stays at holomap's default 0.1 — not 0.0.** The Python baseline calls `UMAP(min_dist=0.0)`, so matching it looks like the obviously correct thing to do. It is not: the standalone gate measured 0.0 regressing the corpus to **13 clusters / 45.2% noise** (both figures sklearn-clustered, so compare them against that binding's 36 / 27.2%, not against this crate's 36 / 30.0%), because holomap's SGD schedule handles the zero-min-dist edge case differently from umap-learn's. This is the trap in the crate — the "consistency fix" that silently halves cluster yield.
 
 **`probabilities` is always `None`.** `hdbscan` 0.12's `.cluster()` returns labels only. The field exists for protocol forward-compatibility and is never populated. *(The first draft promised probabilities on the JS surface. It cannot deliver them.)*
 
 ### Already proven — do not re-litigate
 
-Native pipeline quality on the real 799-row corpus (`coda-fixtures/2026-06-05-claude-corpus-799.tsv`, sha256 `d65077b8…`; 723 rows after excluding the 76 synthetic perf fixtures per MVD §5): **36 clusters, 27.2% noise** — inside the MVD's 30–60 / 10–35% envelope — byte-identical across runs, 5.6× faster than the Python stack.
+Native quality on the real 799-row corpus (`coda-fixtures/2026-06-05-claude-corpus-799.tsv`, sha256 `d65077b8…`; 723 rows after excluding the 76 synthetic perf fixtures per MVD §5), at `n_components=10`, `n_neighbors=15`, `min_cluster_size=5`, `seed=42`:
+
+| Pipeline | Clusters | Noise | Source |
+|---|---|---|---|
+| holomap reduction → **sklearn** HDBSCAN | 36 | 27.2% | `coda/scripts/phase0-clusterer-spike/holomap_gate.py`, re-confirmed byte-identical on the holomap 0.2.0 bump (coda `6062a084`) |
+| holomap reduction → **Rust `hdbscan` 0.12** (this crate) | 36 | 30.0% | measured 2026-08-05 |
+
+**The widely-quoted "36 clusters / 27.2% noise" validated the REDUCTION, using a Python clusterer.** `holomap_gate.py` imports `from sklearn.cluster import HDBSCAN`. This crate clusters with the Rust `hdbscan` crate instead, so its noise fraction differs by ~3 points while the cluster count matches exactly. Both sit inside the MVD's 30–60 / 10–35% envelope. Quoting 27.2% as this pipeline's figure is a misattribution — the all-Rust baseline is **36 / 30.0%**, first recorded here.
 
 Confirmed independently 2026-08-05: holomap alone reduces those 723 rows (1024-d → 10-d, cosine, seed 42) in **2.39 s**; its own suite is 50/50 green; and both `holomap` 0.2.0 and `hdbscan` 0.12.0 compile clean to `wasm32-unknown-unknown` (exit 0, 19 s and 4.5 s), neither pulling a C dependency, BLAS, LAPACK, or OS entropy.
 
@@ -157,7 +164,7 @@ Native pipeline quality is already proven, so these are wasm-specific plus a mov
 
 | # | Gate | Bar | Kind |
 |---|---|---|---|
-| 1 | **Move regression** | `holomap-clusterer` reproduces 36 clusters / 27.2% noise on the 723-row filtered corpus at `min_cluster_size=5`, `n_components=10`, original seed | hard |
+| 1 | **Move regression** | `holomap-clusterer` lands inside 30–60 clusters / 10–35% noise on the 723-row filtered corpus at `min_cluster_size=5`, `n_components=10`, `n_neighbors=15`, `seed=42`. The all-Rust baseline is 36 / 30.0% — not the sklearn-measured 27.2% | hard |
 | 2 | **wasm self-determinism** | Two wasm runs, same input and params → byte-identical `assignments` | hard |
 | 3 | **wasm/native agreement** | wasm diverges from native by no more than native diverges from native across platforms, measured against holomap's existing cross-platform parity suite. Report ARI and cluster-count delta | hard |
 | 4 | **Node ESM + worker load** | Imports and runs to completion inside a `worker_threads` Worker under Node ESM, result matching a main-thread run | hard |
