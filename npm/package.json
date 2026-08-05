@@ -8,7 +8,11 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": { ".": { "import": "./dist/index.js", "types": "./dist/index.d.ts" } },
-  "files": ["dist", "wasm", "LICENSE-MIT", "LICENSE-APACHE"],
+  "files": ["dist", "wasm", "README.md", "LICENSE-MIT", "LICENSE-APACHE", "THIRD-PARTY-LICENSES"],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "restricted"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "build:wasm": "bash ../scripts/build-wasm.sh",

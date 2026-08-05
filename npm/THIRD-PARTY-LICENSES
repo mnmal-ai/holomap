@@ -1,0 +1,131 @@
+THIRD-PARTY LICENSES — @mnmal-ai/holomap-clusterer
+==================================================
+
+Why this file exists
+--------------------
+
+`wasm/holomap_clusterer_bg.wasm` is a *combined work*. It is the Rust crate
+`holomap-clusterer` compiled to `wasm32-unknown-unknown` with all of its Rust
+dependencies statically linked in — there is no dynamic linking and no
+separate artifact for them. Distributing this npm package therefore
+distributes compiled forms of every crate listed below, and their license
+terms travel with it.
+
+The Rust crate has never been in this position: crates.io ships source, and
+the consumer's own `cargo build` resolves and links dependencies under their
+own terms. This npm package is the first distribution of the combined binary,
+so it is the first that owes attribution for the linked code.
+
+Three of the linked crates are **Apache-2.0 only** — they offer no MIT
+alternative:
+
+    approx    0.5.1    Apache-2.0
+    nalgebra  0.35.0   Apache-2.0
+    simba     0.10.0   Apache-2.0
+
+`nalgebra` is what `holomap` uses for the pure-Rust eigensolves behind its
+spectral initialisation; `simba` and `approx` come in transitively with it.
+
+What this means for you
+-----------------------
+
+This package's own code — the TypeScript in `dist/`, the Rust in
+`crates/holomap-clusterer/`, and the `holomap` crate — is licensed
+**MIT OR Apache-2.0**, at your option. That is unchanged and is what
+`package.json` declares.
+
+The three crates above are not dual-licensed, so the Apache-2.0 terms apply to
+their contribution to the `.wasm` regardless of which option you take for
+ours. Taking Apache-2.0 for the whole artifact is the simplest reading and is
+fully consistent — Apache-2.0 is already one of the two options this package
+offers. The full text is shipped alongside this file as `LICENSE-APACHE`; the
+MIT text is `LICENSE-MIT`.
+
+Apache-2.0 §4(d) — the NOTICE-file obligation — is satisfied vacuously here:
+none of `approx` 0.5.1, `nalgebra` 0.35.0 or `simba` 0.10.0 ships a NOTICE
+file in its crates.io artifact (each ships only a bare, unmodified copy of the
+Apache-2.0 text). There is no NOTICE content to propagate. Verified against
+the vendored sources for these exact versions; re-verify if the versions move.
+
+Nothing in `dist/` is affected. The TypeScript sources and the wasm-bindgen
+JS glue in `wasm/holomap_clusterer.js` are MIT-or-Apache dual-licensed
+throughout; the Apache-only code exists solely inside the `.wasm` binary.
+
+
+Crates linked into wasm/holomap_clusterer_bg.wasm
+-------------------------------------------------
+
+    approx                     0.5.1     Apache-2.0                      *
+    bytemuck                   1.25.0    Zlib OR Apache-2.0 OR MIT
+    cfg-if                     1.0.4     MIT OR Apache-2.0
+    hdbscan                    0.12.0    MIT OR Apache-2.0
+    holomap                    0.2.0     MIT OR Apache-2.0
+    itoa                       1.0.18    MIT OR Apache-2.0
+    kdtree                     0.7.0     MIT OR Apache-2.0
+    matrixmultiply             0.3.10    MIT OR Apache-2.0
+    memchr                     2.8.1     Unlicense OR MIT
+    nalgebra                   0.35.0    Apache-2.0                      *
+    num-complex                0.4.6     MIT OR Apache-2.0
+    num-integer                0.1.46    MIT OR Apache-2.0
+    num-rational               0.4.2     MIT OR Apache-2.0
+    num-traits                 0.2.19    MIT OR Apache-2.0
+    once_cell                  1.21.4    MIT OR Apache-2.0
+    rand                       0.9.4     MIT OR Apache-2.0
+    rand_core                  0.9.5     MIT OR Apache-2.0
+    rand_pcg                   0.9.0     MIT OR Apache-2.0
+    rawpointer                 0.2.1     MIT OR Apache-2.0
+    serde                      1.0.228   MIT OR Apache-2.0
+    serde_core                 1.0.228   MIT OR Apache-2.0
+    serde_json                 1.0.150   MIT OR Apache-2.0
+    simba                      0.10.0    Apache-2.0                      *
+    thiserror                  1.0.69    MIT OR Apache-2.0
+    typenum                    1.20.1    MIT OR Apache-2.0
+    wasm-bindgen               0.2.126   MIT OR Apache-2.0
+    wasm-bindgen-shared        0.2.126   MIT OR Apache-2.0
+    wide                       1.5.0     Zlib OR Apache-2.0 OR MIT
+    zmij                       1.0.21    MIT
+
+    * Apache-2.0 only — no MIT option offered.
+
+
+Build-time only — NOT linked into the .wasm
+-------------------------------------------
+
+These are procedural macros and their support crates. They run inside the
+compiler and generate source; none of their own code is present in the
+shipped binary. Listed for completeness because they appear in the
+dependency graph, not because attribution is owed for them.
+
+    bumpalo                    3.20.3    MIT OR Apache-2.0
+    proc-macro2                1.0.106   MIT OR Apache-2.0
+    quote                      1.0.45    MIT OR Apache-2.0
+    serde_derive               1.0.228   MIT OR Apache-2.0
+    syn                        2.0.117   MIT OR Apache-2.0
+    thiserror-impl             1.0.69    MIT OR Apache-2.0
+    unicode-ident              1.0.24    (MIT OR Apache-2.0) AND Unicode-3.0
+    wasm-bindgen-macro         0.2.126   MIT OR Apache-2.0
+    wasm-bindgen-macro-support 0.2.126   MIT OR Apache-2.0
+
+`unicode-ident` carries a Unicode-3.0 term. It is reachable only through
+`proc-macro2`, which is reachable only through proc-macro crates, so its
+tables are compiler-side data and not part of the distributed artifact.
+It is called out anyway so a future reader who moves it into a shipped
+path knows there is a third license family to account for.
+
+
+Regenerating this list
+----------------------
+
+    cargo tree -p holomap-clusterer --features wasm \
+      --target wasm32-unknown-unknown -e normal --prefix none --no-dedupe \
+      | sort -u
+
+Cross-reference the `license` field from `cargo metadata` for each name. The
+build-time/shipped split is determined with `cargo tree -i <crate>`: a crate
+reachable *only* beneath a `(proc-macro)` node is build-time only. Note that
+`wasm-bindgen-shared` is reachable both ways and therefore ships.
+
+This file is maintained by hand and is accurate as of the dependency versions
+pinned in `Cargo.lock`. A dependency bump can change it — re-run the above
+whenever `Cargo.lock` moves, and in particular re-check whether any newly
+Apache-only crate has entered the graph.
