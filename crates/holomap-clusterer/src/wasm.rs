@@ -21,7 +21,7 @@ pub const MAX_ROWS: usize = 50_000;
 pub fn reshape(flat: &[f32], n_features: usize) -> Vec<Vec<f32>> {
     assert!(n_features > 0, "n_features must be positive");
     assert!(
-        flat.len() % n_features == 0,
+        flat.len().is_multiple_of(n_features),
         "buffer length {} is not divisible by n_features {}",
         flat.len(),
         n_features
@@ -48,7 +48,7 @@ mod bindings {
         if n_features == 0 {
             return Err(JsError::new("n_features must be positive"));
         }
-        if vectors.len() % n_features != 0 {
+        if !vectors.len().is_multiple_of(n_features) {
             return Err(JsError::new(&format!(
                 "buffer length {} is not divisible by n_features {n_features}",
                 vectors.len()
