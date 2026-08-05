@@ -6,3 +6,7 @@ __pycache__/
 .worktrees/
 
 crates/holomap-clusterer/pkg/
+
+# npm package build output + deps
+npm/node_modules/
+npm/dist/
