@@ -1,0 +1,99 @@
+/**
+ * Gate 5. Wall clock for both backends.
+ *
+ * Run with the wasm built both ways to quantify the auto-vectorisation gap:
+ *   pnpm build:wasm && pnpm tsx bench/measure.ts          # with +simd128
+ *   (rebuild without RUSTFLAGS, re-run)                   # without
+ *
+ * Native reference from holomap's README: ~3 s at 1k x 50-d, ~26 s at 10k.
+ * The gate fails only if 10k exceeds 300 s.
+ *
+ * n=723 reports the median of 3 timed runs: single-shot noise at this size
+ * is the same order of magnitude as the deltas this harness exists to
+ * detect (e.g. the +simd128 gap), so one run can't support a claim about it.
+ * n=10000 is single-shot, and the output says so explicitly — repeating a
+ * 10k run 3x costs several extra minutes per backend per build, so this
+ * harness does not denoise it. Read a 10k delta as directional, not exact.
+ *
+ * RSS is not reported. process.memoryUsage().rss only ever reflects this
+ * (parent) process. That's a reasonable proxy for the wasm backend, which
+ * computes in-process, but the subprocess backend's actual work happens in
+ * a spawned child this process never samples — a "subprocess RSS" number
+ * here would describe the wrong process's memory, and even the wasm number
+ * would only be a post-completion snapshot, not the peak the old docstring
+ * claimed. A wrong or partial number is worse than none, so this harness
+ * measures wall-clock only.
+ */
+import { SubprocessClusterer, WasmClusterer } from '../src/index.js';
+import type { Clusterer, ClusterParams } from '../src/types.js';
+
+const BIN = new URL('../../target/release/holomap-clusterer', import.meta.url).pathname;
+
+function synthetic(n: number, dims: number): Float32Array[] {
+  let state = 7n;
+  const next = () => {
+    state = (state * 6364136223846793005n + 1442695040888963407n) & 0xffffffffffffffffn;
+    return Number(state >> 33n) / 0xffffffff - 0.5;
+  };
+  return Array.from({ length: n }, (_, i) => {
+    const v = new Float32Array(dims);
+    v[i % dims] = 10.0;
+    for (let j = 0; j < dims; j++) v[j] += next() * 0.5;
+    return v;
+  });
+}
+
+async function timeOnce(
+  clusterer: Clusterer,
+  vectors: Float32Array[],
+  params: ClusterParams
+): Promise<number> {
+  const t0 = performance.now();
+  await clusterer.cluster(vectors, params);
+  return (performance.now() - t0) / 1000;
+}
+
+function median(xs: readonly number[]): number {
+  const sorted = [...xs].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)]!;
+}
+
+const PARAMS = { nComponents: 10, nNeighbors: 15, minClusterSize: 5, seed: 42 };
+
+// Warm the wasm module OUTSIDE any timed region, before the loop below even
+// starts. wasm-clusterer.ts lazily require()s the glue on first use, and the
+// glue's top-level code does a synchronous readFileSync + WebAssembly.Module
+// compile + instantiate right there — Node then caches that module process-
+// wide, so it only ever happens once per process. Left unwarmed, that
+// one-time cost lands entirely on whichever timed call happens to run first
+// (with the loop order below, always "wasm n=723"), inflating it by a fixed
+// amount that swamps the small deltas (e.g. simd128 vs. not) this harness
+// exists to detect.
+{
+  const warmupVectors = synthetic(10, 4);
+  const warmupParams: ClusterParams = { nComponents: 2, nNeighbors: 3, minClusterSize: 2, seed: 1 };
+  await new WasmClusterer().cluster(warmupVectors, warmupParams);
+}
+
+for (const n of [723, 10_000]) {
+  const vectors = synthetic(n, 50);
+  for (const [name, clusterer] of [
+    ['wasm', new WasmClusterer()],
+    ['subprocess', new SubprocessClusterer([BIN])]
+  ] as const) {
+    if (n === 10_000) {
+      const secs = await timeOnce(clusterer, vectors, PARAMS);
+      console.log(`${name} n=${n} wall=${secs.toFixed(1)}s (single-shot)`);
+    } else {
+      const reps = [
+        await timeOnce(clusterer, vectors, PARAMS),
+        await timeOnce(clusterer, vectors, PARAMS),
+        await timeOnce(clusterer, vectors, PARAMS)
+      ];
+      console.log(
+        `${name} n=${n} wall=${median(reps).toFixed(1)}s ` +
+          `(median of 3: ${reps.map((s) => s.toFixed(1)).join('s, ')}s)`
+      );
+    }
+  }
+}

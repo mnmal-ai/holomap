@@ -1,2 +1,15 @@
 /target
 __pycache__/
+
+# SDD scratch + worktrees (git-ignored working state, never committed)
+.superpowers/
+.worktrees/
+
+crates/holomap-clusterer/pkg/
+
+# npm package build output + deps
+npm/node_modules/
+npm/dist/
+
+# wasm build output — produced by scripts/build-wasm.sh, never committed
+npm/wasm/
