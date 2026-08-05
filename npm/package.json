@@ -12,6 +12,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "build:wasm": "bash ../scripts/build-wasm.sh",
+    "prepublishOnly": "bash ../scripts/build-wasm.sh",
+    "pretest": "test -f wasm/holomap_clusterer.js || { echo 'wasm artifact missing — run: pnpm build:wasm'; exit 1; }",
     "test": "vitest run",
     "check-types": "tsc -p tsconfig.json --noEmit"
   },
