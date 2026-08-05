@@ -1,0 +1,21 @@
+[package]
+name = "holomap-clusterer"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Deterministic reduce→cluster pipeline: holomap UMAP + HDBSCAN. JSON-lines peripheral and wasm binding."
+repository = "https://github.com/mnmal-ai/holomap"
+keywords = ["clustering", "hdbscan", "umap", "deterministic", "embedding"]
+categories = ["science", "algorithms"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# rayon disabled deliberately: parallel MST construction would admit
+# thread-scheduling non-determinism. `serial` gives us .cluster().
+hdbscan = { version = "0.12", default-features = false, features = ["serial"] }
+holomap = { version = "0.2", path = "../.." }
+
+[[bin]]
+name = "holomap-clusterer"
+path = "src/main.rs"

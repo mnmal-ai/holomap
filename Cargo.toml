@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "crates/holomap-clusterer"]
+
 [package]
 name = "holomap"
 version = "0.2.0"
