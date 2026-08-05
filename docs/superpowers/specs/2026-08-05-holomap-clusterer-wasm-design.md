@@ -55,9 +55,11 @@ export class ClustererError extends Error {}
 
 The binding is config-driven — `CODA_DYNAMICS_CLUSTERER` argv, defaulting to the Rust binary — and **has already been swapped once**, from `clusterer.py` to the Rust binary on 2026-06-07. The pluggable-backend design is not speculative here: it is proven in production and has survived a real backend change.
 
-### Two behaviours that must survive the move
+### Three behaviours that must survive the move
 
 **`min_samples` is deliberately unset.** The `hdbscan` crate then defaults it to `min_cluster_size`, matching sklearn's `HDBSCAN(min_cluster_size=5)`. The in-code comment records that setting it to `n_neighbors` collapsed the reference corpus from **36 clusters to 8**, and that the earlier wiring was a cross-binding inconsistency with `clusterer.py`. Hard-won, not an oversight.
+
+**`min_dist` stays at holomap's default 0.1 — not 0.0.** The Python baseline calls `UMAP(min_dist=0.0)`, so matching it looks like the obviously correct thing to do. It is not: the standalone gate measured 0.0 regressing the reference corpus from 36 clusters / 27.2% noise to **13 / 45.2%**, because holomap's SGD schedule handles the zero-min-dist edge case differently from umap-learn's. This is the trap in the crate — the "consistency fix" that silently halves cluster yield.
 
 **`probabilities` is always `None`.** `hdbscan` 0.12's `.cluster()` returns labels only. The field exists for protocol forward-compatibility and is never populated. *(The first draft promised probabilities on the JS surface. It cannot deliver them.)*
 
