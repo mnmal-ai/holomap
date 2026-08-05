@@ -11,6 +11,7 @@
   "files": ["dist", "wasm"],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "build:wasm": "bash ../scripts/build-wasm.sh",
     "test": "vitest run",
     "check-types": "tsc -p tsconfig.json --noEmit"
   },
