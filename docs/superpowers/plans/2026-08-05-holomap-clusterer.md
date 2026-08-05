@@ -6,7 +6,7 @@
 
 **Architecture:** `crates/holomap-clusterer` is the Rust core — unchanged `run_pipeline`, plus a `wasm` feature exposing it to JS. `npm/` wraps it as `@mnmal-ai/holomap-clusterer`, shipping the `Clusterer` interface with `WasmClusterer` (bundled wasm, default) and `SubprocessClusterer` (spawns a native binary). Coda migrates to the package and deletes its local copies.
 
-**Tech Stack:** Rust 1.93 (edition 2024 for holomap, 2021 for the clusterer), `holomap` 0.2, `hdbscan` 0.12 (`serial` only), `wasm-bindgen`, `wasm-pack`, TypeScript, Vitest, Biome.
+**Tech Stack:** Rust 1.93 (edition 2024 for holomap, 2021 for the clusterer), `holomap` 0.2, `hdbscan` 0.12 (`serial` only), `wasm-bindgen` + `wasm-bindgen-cli`, TypeScript, Vitest, Biome. **Not `wasm-pack`** — 0.15.0 is incompatible with cargo 1.95.0 (see Task 5).
 
 **Spec:** [`docs/superpowers/specs/2026-08-05-holomap-clusterer-wasm-design.md`](../specs/2026-08-05-holomap-clusterer-wasm-design.md)
 
@@ -752,16 +752,36 @@ The bundled backend, plus proof it runs inside a worker thread.
 - [ ] **Step 1: Wire the wasm artifact into the package**
 
 ```bash
-cd /mnt/data/Develop/holomap/crates/holomap-clusterer
+# wasm-pack is NOT used: wasm-pack 0.15.0 invokes `cargo build --out-dir`
+# internally, and cargo 1.95.0 renamed that unstable flag to --artifact-dir,
+# so every wasm-pack build fails. Reproduced independently 2026-08-05.
+#
+# The direct route is also strictly better: wasm-bindgen-cli MUST match the
+# wasm-bindgen crate version exactly, and a mismatch fails in confusing ways.
+# wasm-pack hid that coupling; here it is explicit and derived from Cargo.lock.
+cd /mnt/data/Develop/holomap/.worktrees/holomap-clusterer
+
+WB_VERSION=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | grep '^version' | cut -d'"' -f2)
+echo "matching wasm-bindgen-cli to crate version $WB_VERSION"
+cargo install wasm-bindgen-cli --version "$WB_VERSION" --locked
+
 RUSTFLAGS="-C target-feature=+simd128" \
-  wasm-pack build --release --target nodejs --features wasm --out-dir ../../npm/wasm
+  cargo build --release --target wasm32-unknown-unknown -p holomap-clusterer --features wasm
+
+wasm-bindgen --target nodejs --out-dir npm/wasm \
+  target/wasm32-unknown-unknown/release/holomap_clusterer.wasm
+ls -la npm/wasm/
 ```
 
-Add to `npm/package.json` scripts:
+Expected: `npm/wasm/holomap_clusterer_bg.wasm` (~255 KB), `holomap_clusterer.js`, `holomap_clusterer.d.ts`.
+
+Add to `npm/package.json` scripts (a shell script keeps the version-derivation readable):
 
 ```json
-"build:wasm": "cd ../crates/holomap-clusterer && RUSTFLAGS=\"-C target-feature=+simd128\" wasm-pack build --release --target nodejs --features wasm --out-dir ../../npm/wasm"
+"build:wasm": "bash ../scripts/build-wasm.sh"
 ```
+
+Create `scripts/build-wasm.sh` at the repo root with the command block above (minus the `cd`), `set -euo pipefail` at the top, and `chmod +x`. CI calls the same script, so the build path has exactly one definition.
 
 - [ ] **Step 2: Write the failing test**
 
@@ -1143,12 +1163,8 @@ Append to `.github/workflows/ci.yml`, and change the existing `lint` and `test` 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable as of 2026-06-07
         with:
           targets: wasm32-unknown-unknown
-      - uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
       - name: Build wasm
-        working-directory: crates/holomap-clusterer
-        env:
-          RUSTFLAGS: -C target-feature=+simd128
-        run: wasm-pack build --release --target nodejs --features wasm --out-dir ../../npm/wasm
+        run: bash scripts/build-wasm.sh
       - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
         with: { version: 10 }
       - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v5.0.0
