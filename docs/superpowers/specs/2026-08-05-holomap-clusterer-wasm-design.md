@@ -129,7 +129,14 @@ export class SubprocessClusterer implements Clusterer { }  // spawns a native bi
 
 **`run_pipeline` is not refactored for this.** One `Vec` allocation per row — 723 on the reference corpus, 50k at the ceiling — is not the bottleneck beside the quadratic kNN. A flat-input core is a fair later optimisation if profiling justifies it; doing it now means changing tested production code for a hypothetical.
 
-**Build with `-C target-feature=+simd128` — but not for the reason originally given.** The rationale here was that native LLVM auto-vectorises `exact_knn`'s scalar distance loop to AVX and wasm would not without the flag, so omitting it would widen the gap. **Measured 2026-08-05, that is not observable on this workload.** With the wasm module warmed before timing, n=723 is identical to three significant figures with and without the flag (2.4 s both), and n=10k differs by ~2.2% single-shot — noise, not signal.
+**Build with `-C target-feature=+simd128` — kept because it is free, on a rationale that is UNMEASURED rather than disproven.** The original argument was that native LLVM auto-vectorises `exact_knn`'s scalar distance loop to AVX and wasm would not without the flag, so omitting it would widen the gap. This spec previously recorded that as disproven: with the module warmed, n=723 was identical to three significant figures and n=10k differed ~2.2% — "noise, not signal".
+
+**That retraction was overstated and is itself retracted (2026-08-06).** Two independent problems with the measurement, either of which is disqualifying:
+
+- **Contention.** The runs were taken while another project's suite saturated the same 4-core box — load average peaked near 60. A 2.2% delta establishes nothing in either direction under that.
+- **Hardware that could not show the effect.** The host is an i5-3470S (Ivy Bridge, 2012): AVX yes, **AVX2 no, FMA no**. wasm's `simd128` is 128-bit. The widest gap the original argument predicts — native pulling ahead on 256-bit integer lanes and fused multiply-add — was not available to be observed on that CPU even on a quiet box.
+
+So the position is **not measured**, not *measured and found absent*. Re-measurement belongs on AVX2 hardware, which is where the effect would appear if it is real.
 
 The flag stays because it is free and may matter on other hosts or larger inputs, but no performance claim should rest on it. The real, measured cost of choosing wasm over the subprocess is below.
 
@@ -142,7 +149,9 @@ Same host, same corpus shape, wasm warmed before timing; n=723 is a median of th
 | `WasmClusterer` | 2.4 s | 53.6 s |
 | `SubprocessClusterer` | 1.3 s | 30.5 s |
 
-**Choosing wasm costs roughly 1.8×.** Both clear the 300 s gate with ~5.6× headroom at 10k. For context, coda's real corpus is 723 rows and 10k is estimated at roughly a year of accumulation — so at realistic sizes the absolute difference is about a second.
+**Choosing wasm looks to cost roughly 1.8×.** Both clear the 300 s gate with ~5.6× headroom at 10k. For context, coda's real corpus is 723 rows and 10k is estimated at roughly a year of accumulation — so at realistic sizes the absolute difference is about a second.
+
+⚠️ **Approximate, pending re-measurement.** Taken under the contention described above, on pre-AVX2 hardware. An independent measurement on the same box put the ratio at ~1.5–1.6×; the two are not independent confirmations of each other, being two noisy looks at one quantity from the same contended host. The decision does not turn on which end of that range is right, which is why the conclusion stands while the figures do not. Cluster and noise counts are unaffected — those are deterministic for a given input and seed and have been reproduced independently by three parties. Only wall-clock is contended.
 
 **Errors throw.** `Response.error` is in-band by design for the sidecar's per-line contract, but a JS method resolving to a result object carrying an error field invites callers to ignore it. `WasmClusterer` throws `ClustererError` with the crate's message, matching what `SubprocessClusterer` already does.
 
