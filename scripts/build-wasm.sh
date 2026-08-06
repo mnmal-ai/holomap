@@ -22,17 +22,20 @@ if ! cargo_err=$(cargo --version 2>&1); then
   printf '%s\n' "$cargo_err" | sed 's/^/  /' >&2
   cat >&2 <<'EOF'
 
-If that says "No version is set for shim: cargo", cargo is a mise shim and
-this repo deliberately does not pin a toolchain (see below). Either set one
-for your shell -- `mise use -g rust@stable` -- or run this with an explicit
-version: MISE_RUST_VERSION=stable bash scripts/build-wasm.sh
+If that says "No version is set for shim: cargo", cargo is a mise shim with
+no rust version configured. The repo's rust-toolchain.toml does NOT help
+here -- mise does not read it (verified). Either set a version for your
+shell:
 
-Why no pin: a repo-level mise.toml was tried and reverted. It made mise take
-over rust here, and on a box where rustup already provides a working
-toolchain mise failed to install its own and left cargo unusable -- strictly
-worse than the confusing message this text replaces. A rustup-native
-rust-toolchain.toml is the likely right answer and has not been validated
-yet.
+  mise use -g rust@stable
+
+or run this with an explicit one:
+
+  MISE_RUST_VERSION=stable bash scripts/build-wasm.sh
+
+A repo-level mise.toml would also work and was tried, then reverted: it made
+mise take over rust, fail to install its own copy, and leave cargo unusable
+on a box where rustup was already serving a working toolchain.
 
 No mise? Install Rust from https://rustup.rs.
 EOF

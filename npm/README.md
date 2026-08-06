@@ -160,7 +160,9 @@ pnpm test
 
 Use the script, not `wasm-pack` directly: `wasm-pack` 0.15.0 is broken against cargo 1.95.0 (it calls the removed `cargo build --out-dir`), and the script also derives the `wasm-bindgen-cli` version from `Cargo.lock` — CLI and crate versions must match exactly or the generated glue won't load. It preflights the two things that otherwise fail deep inside cargo with unhelpful messages: an unresolvable `cargo` shim, and a missing `wasm32-unknown-unknown` target. Both cost a first-time consumer real time before the checks existed.
 
-This repo deliberately does **not** pin a Rust toolchain. A `mise.toml` was tried and reverted: on a machine where rustup already provides a working toolchain, it made mise take over, fail to install its own copy, and leave `cargo` unusable — worse than the confusing message it was meant to fix. A rustup-native `rust-toolchain.toml` is probably the right answer and hasn't been validated. Meanwhile the preflight names the fix.
+The repo ships a `rust-toolchain.toml` pinning the channel to `stable` and declaring `wasm32-unknown-unknown`, so a fresh checkout gets the target without a separate `rustup target add`. Note it tracks stable rather than a fixed version — deliberately, since CI uses stable and a pin here would silently override it — so it may update your toolchain.
+
+It does **not** help if `cargo` is a mise shim with no version configured: mise doesn't read that file. A `mise.toml` would, and was tried and reverted — on a machine where rustup already provided a working toolchain it made mise take over, fail to install its own copy, and leave `cargo` unusable. The preflight names the fix for that case instead.
 
 ### The `.wasm` is not byte-reproducible
 
