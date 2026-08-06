@@ -32,16 +32,26 @@ Because they buy genuinely different things, and neither one dominates.
 
 ### What the default costs you
 
-Measured, not assumed. Same host, same corpus shape, wasm module warmed before timing; n=723 is a median of three runs, n=10k single-shot:
+> ⚠️ **These timings are approximate and pending re-measurement.** They were taken on a 4-core Intel i5-3470S (Ivy Bridge, 2012) **under concurrent load from another project's test suite** — load average peaked around 60 on those 4 cores. Treat the ratio as indicative and the absolute durations as soft. The cluster and noise figures elsewhere in this README are *not* affected: those are deterministic for a given input and seed, and have been independently reproduced by three parties. Only wall-clock is contended.
+
+Same host, same corpus shape, wasm module warmed before timing; n=723 is a median of three runs, n=10k single-shot:
 
 | Backend | n=723 | n=10,000 |
 |---|---|---|
 | `WasmClusterer` | 2.4 s | 53.6 s |
 | `SubprocessClusterer` | 1.3 s | 30.5 s |
 
-**Choosing wasm costs roughly 1.8×.** At the corpus sizes that actually occur — the reference corpus is 723 rows, and 10k is estimated at about a year of accumulation — that is about a second. That is what a clean install is worth here, and it's why wasm is the default rather than the fallback.
+**Choosing wasm looks to cost roughly 1.8×.** At the corpus sizes that actually occur — the reference corpus is 723 rows, and 10k is estimated at about a year of accumulation — that is about a second. That is what a clean install is worth here, and it's why wasm is the default rather than the fallback. The conclusion is robust to the noise: an independent measurement on the same box put it at ~1.5–1.6×, and the choice does not turn on which end of that range is right.
 
-The build passes `-C target-feature=+simd128`. It is kept because it is free, **not** because it was measured to help: with the module warmed, n=723 is identical to three significant figures with and without it, and n=10k differs ~2.2% single-shot. The original argument — that native LLVM auto-vectorises the kNN distance loop and wasm won't — was plausible and did not survive measurement. Don't restate it.
+### `+simd128`: not measured, rather than measured as noise
+
+The build passes `-C target-feature=+simd128`, and it is kept because it is free.
+
+The original argument for it was that native LLVM auto-vectorises the kNN distance loop and wasm will not without the flag. That argument was previously described here as having "not survived measurement" — on the basis that n=723 was identical to three significant figures with and without it, and n=10k differed ~2.2%.
+
+**That retraction was overstated, in two separate ways.** Under the contention above, a 2.2% delta establishes nothing in either direction. And the test hardware could not have demonstrated the effect even on a quiet box: the i5-3470S predates AVX2 and has no FMA, while wasm's `simd128` is 128-bit — so the *widest* gap the original argument predicts, native pulling ahead on 256-bit integer lanes and fused multiply-add, was not available to be observed.
+
+So the honest position is **not measured**, not *measured and found absent*. Those read very differently to someone deciding whether to keep the flag. Re-measurement is pending on AVX2 hardware, which is where the effect would appear if it is real.
 
 ## Why determinism is the point
 
