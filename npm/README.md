@@ -126,6 +126,30 @@ const WASM_MAX_ROWS = 50_000;
 
 Input takes `readonly Float32Array[]` rather than one flat buffer. That signature was already in production and is kept unchanged: flattening inside the wasm backend costs a single copy, negligible beside a quadratic kNN, and changing a working consumer's interface for a micro-optimisation is the wrong trade.
 
+## Adopting this package: two things that won't announce themselves
+
+Both were found by the first real consumer during migration. Neither is a defect, and neither shows up as a failure — which is exactly why they're here rather than left to be discovered.
+
+### Your existing tests may go quietly vacuous
+
+A shared validator runs **before either backend does any work**, rejecting empty input, ragged dimensions, seeds it can't pass through faithfully, and row counts below `max(minClusterSize, 2)`.
+
+If you're migrating from a looser clusterer and you have tests that feed degenerate input to assert on downstream behaviour — a child process's stderr, an exit code, a specific parse failure — those assertions now target something that never runs. `SubprocessClusterer` rejects before spawning, so the process under test doesn't exist. **The tests keep passing.** Nothing in the result says the subject became unreachable.
+
+The first consumer had exactly two such tests and the suite stayed green through the whole migration.
+
+There's a cheap general heuristic here, and it isn't specific to this package: **any assertion whose expected delta is exactly `0`, or whose input is degenerate, deserves a deliberate check that the code path still executes.** We produced this failure twice in one day from opposite directions — their tests passed because the input stopped reaching the child; ours passed because the fixture couldn't distinguish the two backends. Same signature, different mechanism, both invisible to CI.
+
+### `SubprocessClusterer` has no out-of-the-box path from the registry
+
+This package ships `dist/` and `wasm/`. It does **not** ship the native binary, and won't.
+
+So a registry-only consumer can use `WasmClusterer` immediately and `SubprocessClusterer` not at all — the latter needs a `holomap-clusterer` binary you build or distribute yourself, and you point its `argv` at that.
+
+That asymmetry is the entire reason wasm is the default. Shipping per-platform native binaries through npm is the distribution problem this package exists to avoid: a platform matrix, a postinstall step, and an artifact that breaks on every runner you didn't anticipate. A consumer that just wants clustering to work should use wasm and never think about this. A consumer that wants native speed is, by definition, already willing to manage a binary.
+
+Recorded so it reads as a decision rather than an omission.
+
 ## Choosing a backend from config
 
 The package exports both classes and takes no view on how you select one. The pattern the intended consumer uses is a discriminated union, matching how it already configures its embedder:
