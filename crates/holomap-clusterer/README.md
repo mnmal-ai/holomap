@@ -59,6 +59,31 @@ On the 723-row filtered reference corpus at `n_components=10, n_neighbors=15, mi
 
 **The widely-quoted "36 / 27.2%" validated the *reduction*, using a Python clusterer** (coda's `holomap_gate.py` imports `sklearn.cluster.HDBSCAN`). This crate's own all-Rust baseline is **36 / 30.0%** — same cluster count, ~3 points more noise. Quoting 27.2% as this pipeline's number is a misattribution. Both sit inside the 30–60 clusters / 10–35% noise envelope the consumer's design requires.
 
+That baseline is measured on **raw** corpus floats. Read the next section before comparing anything against it.
+
+## Deterministic is not the same as numerically stable
+
+The determinism contract holds: same input, same params, same seed, same assignments, every time. It is verified, it is the product, and nothing below weakens it.
+
+It does not imply the neighbouring property, and the difference matters in practice. *Near*-identical input does not give near-identical output. HDBSCAN is a density algorithm, so a perturbation far below any meaningful precision moves points across cluster boundaries, and the effect compounds through the reduction ahead of it.
+
+Measured on the 723-row corpus at the pinned params. All three inputs are the same vectors to within float32 rounding, and since `run_pipeline` L2-normalises internally as step 1, pre-normalising is **mathematically a no-op**:
+
+| input | clusters | noise |
+|---|---|---|
+| raw | 36 | 30.0% (217 rows) |
+| normalised, norm accumulated in f32 | 37 | 29.2% (211 rows) |
+| normalised, norm accumulated in f64 | 34 | 27.2% (197 rows) |
+
+A spread of 3 clusters and 20 noise rows, produced entirely by how a division was rounded. A fourth path — coda's `EmbeddingsGateway`, normalising its own way — reported 33 / 25.4%, which neither variant here reproduces.
+
+Two consequences worth taking seriously:
+
+- **Do not treat any single figure as *the* result for a corpus.** It is the result for that corpus *as you fed it*. A consumer that L2-normalises at its boundary — which every TypeScript consumer does, since raw bge-m3 is not unit length — is in a different regime from this crate's published baseline and should expect different numbers. coda's integration nearly reported a false regression on exactly this.
+- **"Structurally identical cross-platform" is a weaker guarantee than it sounds.** Any cross-platform float difference is amplified the same way. That is why `tests/fixture_regression.rs` gates the MVD's *band* across every regime rather than pinning an exact count in one of them — an equality assertion would pin one arbitrary point of a sensitive function and call it a contract.
+
+The 27.2% in the f64 row is a **coincidence**. sklearn's figure for this corpus is also 27.2%, by a completely different route. They are unrelated numbers that happen to collide; reading it as the two pipelines converging would be wrong.
+
 ## The honest envelope
 
 holomap's kNN is exact brute force — O(N²·d) — so the ceiling is **~50k rows**. That is a deliberate trade: exactness is what makes the kNN stage deterministic by construction rather than by seeding an approximation. Seeded ANN for larger N is a future direction, not a promise.

@@ -1,11 +1,57 @@
 //! Reference-corpus regression gate.
 //!
 //! The unit suite proves the code is wired correctly. This proves the
-//! PIPELINE still behaves: this crate's own all-Rust pipeline (holomap +
-//! `hdbscan`) produces 36 clusters / 30.0% noise on the real 723-row
-//! corpus. (A different figure, 27.2% noise, comes from a different
-//! clusterer entirely — see `pipeline.rs`'s module doc for the
-//! attribution — and is not this crate's own result.)
+//! PIPELINE still behaves, across the input regimes that actually occur.
+//!
+//! # Three regimes, because "normalised" is not one thing
+//!
+//! This crate's baseline of 36 clusters / 30.0% noise is measured on RAW
+//! corpus floats — the TSV parsed and fed straight in.
+//!
+//! No TypeScript consumer feeds that. Raw bge-m3 vectors are not unit
+//! length (norm ~25), and consumers L2-normalise at their own boundary so
+//! cosine can be computed as a plain dot product downstream.
+//!
+//! [`holomap_clusterer::pipeline::run_pipeline`] L2-normalises internally as
+//! step 1, so pre-normalising is **mathematically a no-op**. It is not a
+//! no-op in practice, and — this is the part that surprised us — it does not
+//! even have a single answer. Measured 2026-08-05 on the 723-row corpus at
+//! the pinned params:
+//!
+//! | input | clusters | noise |
+//! |---|---|---|
+//! | raw | 36 | 30.0% (217 rows) |
+//! | normalised, norm accumulated in f32 | 37 | 29.2% (211 rows) |
+//! | normalised, norm accumulated in f64 | 34 | 27.2% (197 rows) |
+//!
+//! All three are the same vectors to within float32 rounding. The spread is
+//! 3 clusters and 20 noise rows, produced entirely by *how* the division was
+//! rounded. A fourth path — coda's `EmbeddingsGateway`, which normalises in
+//! its own way — reported 33 / 25.4%, which neither variant here reproduces.
+//!
+//! **The 27.2% in the f64 row is a coincidence.** sklearn's figure for this
+//! corpus is also 27.2% (via coda's `holomap_gate.py`, which reduces with
+//! holomap but clusters with sklearn). They are unrelated numbers that
+//! happen to collide, and reading this as the two pipelines converging would
+//! be wrong. See `pipeline.rs`'s module doc for that attribution.
+//!
+//! # Deterministic is not the same as numerically stable
+//!
+//! Identical input reproduces identical output — that contract holds, it is
+//! verified elsewhere, and it is the product. It does not imply that
+//! *near*-identical input produces near-identical output, and here it does
+//! not: HDBSCAN is a density algorithm, so a perturbation far below any
+//! meaningful precision moves points across cluster boundaries, and the
+//! effect compounds through the reduction.
+//!
+//! What this suite can honestly gate is therefore the MVD's band, applied to
+//! every regime — not an exact count in any one of them. An equality
+//! assertion here would pin one arbitrary point of a sensitive function and
+//! call it a contract. The useful guarantee is that whichever of these a
+//! consumer feeds, the result stays inside the envelope the consumer's
+//! design requires.
+//!
+//! # Running it
 //!
 //! Env-gated because the fixture is 9.4 MB and lives outside this repo: a
 //! 799-row TSV export of the Claude corpus described in coda's MVD (6
@@ -20,6 +66,10 @@
 
 use holomap_clusterer::pipeline::run_pipeline;
 use holomap_clusterer::protocol::{Params, Request, PROTOCOL_VERSION};
+
+/// The MVD's established envelope, applied to every regime.
+const CLUSTER_BAND: std::ops::RangeInclusive<usize> = 30..=60;
+const NOISE_BAND: std::ops::RangeInclusive<f64> = 10.0..=35.0;
 
 /// Load the corpus, excluding the 76 synthetic perf fixtures. Coda's MVD §5
 /// found those near-duplicates form the densest regions in the whole corpus
@@ -46,17 +96,50 @@ fn load_fixture(path: &str) -> Vec<Vec<f32>> {
         .collect()
 }
 
-#[test]
-fn reference_corpus_reproduces_the_established_result() {
-    let Ok(path) = std::env::var("HOLOMAP_CLUSTERER_FIXTURE") else {
-        eprintln!("skipping: HOLOMAP_CLUSTERER_FIXTURE unset");
-        return;
-    };
+/// L2-normalise accumulating the norm in f32.
+///
+/// Matches what `pipeline.rs` itself does internally, so this is the variant
+/// that is closest to "the same operation applied twice".
+fn l2_normalise_f32(vecs: &[Vec<f32>]) -> Vec<Vec<f32>> {
+    vecs.iter()
+        .map(|v| {
+            let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if norm == 0.0 {
+                v.clone()
+            } else {
+                v.iter().map(|x| x / norm).collect()
+            }
+        })
+        .collect()
+}
 
-    let vectors = load_fixture(&path);
-    assert_eq!(vectors.len(), 723, "expected 799 rows minus 76 synthetic");
-    assert_eq!(vectors[0].len(), 1024, "bge-m3 dimensionality");
+/// L2-normalise accumulating the norm in f64, then round back to f32.
+///
+/// This is what a JavaScript consumer produces without meaning to: every JS
+/// number is a double, so normalising a `Float32Array` in JS does the
+/// arithmetic in f64 and only re-rounds on store. Included because it is a
+/// realistic consumer path, not because it is more correct — the point of
+/// having both is that the choice is invisible at the call site and still
+/// changes the answer.
+fn l2_normalise_f64(vecs: &[Vec<f32>]) -> Vec<Vec<f32>> {
+    vecs.iter()
+        .map(|v| {
+            let norm: f64 = v
+                .iter()
+                .map(|&x| f64::from(x) * f64::from(x))
+                .sum::<f64>()
+                .sqrt();
+            if norm == 0.0 {
+                v.clone()
+            } else {
+                v.iter().map(|&x| (f64::from(x) / norm) as f32).collect()
+            }
+        })
+        .collect()
+}
 
+/// Run the pipeline and return (cluster count, noise percentage).
+fn cluster(vectors: Vec<Vec<f32>>) -> (usize, f64) {
     let resp = run_pipeline(&Request {
         protocol_version: PROTOCOL_VERSION,
         vectors,
@@ -75,18 +158,105 @@ fn reference_corpus_reproduces_the_established_result() {
     let clusters = labels.iter().filter(|&&l| l >= 0).count();
     let noise = resp.assignments.iter().filter(|&&l| l == -1).count();
     let noise_pct = 100.0 * noise as f64 / resp.assignments.len() as f64;
+    (clusters, noise_pct)
+}
 
-    eprintln!("clusters={clusters} noise={noise_pct:.1}%");
-
-    // The MVD's established envelope. Deliberately a band, not an equality:
-    // a dependency patch may shift the exact count without breaking the
-    // pipeline, but leaving this band means something real changed.
+fn assert_in_band(regime: &str, clusters: usize, noise_pct: f64) {
+    eprintln!("{regime}: clusters={clusters} noise={noise_pct:.1}%");
     assert!(
-        (30..=60).contains(&clusters),
-        "cluster count {clusters} outside the 30-60 gate"
+        CLUSTER_BAND.contains(&clusters),
+        "{regime}: cluster count {clusters} outside the {:?} gate",
+        CLUSTER_BAND
     );
     assert!(
-        (10.0..=35.0).contains(&noise_pct),
-        "noise {noise_pct:.1}% outside the 10-35% gate"
+        NOISE_BAND.contains(&noise_pct),
+        "{regime}: noise {noise_pct:.1}% outside the {:?}% gate",
+        NOISE_BAND
     );
+}
+
+fn fixture() -> Option<Vec<Vec<f32>>> {
+    let path = std::env::var("HOLOMAP_CLUSTERER_FIXTURE").ok()?;
+    let vectors = load_fixture(&path);
+    assert_eq!(vectors.len(), 723, "expected 799 rows minus 76 synthetic");
+    assert_eq!(vectors[0].len(), 1024, "bge-m3 dimensionality");
+    Some(vectors)
+}
+
+/// Raw, unnormalised input — this crate's own published baseline.
+#[test]
+fn reference_corpus_raw_input() {
+    let Some(vectors) = fixture() else {
+        eprintln!("skipping: HOLOMAP_CLUSTERER_FIXTURE unset");
+        return;
+    };
+    let (clusters, noise_pct) = cluster(vectors);
+    assert_in_band("raw", clusters, noise_pct);
+}
+
+/// Pre-normalised input, f32 accumulation — the variant matching what the
+/// pipeline does internally.
+///
+/// This case exists because coda's integration nearly reported a false
+/// regression against the raw baseline: its gateway normalises by contract,
+/// so it could not reproduce the published figure and the gap looked like a
+/// defect. It is not one. Every regime here is correct; they simply are not
+/// the same number.
+#[test]
+fn reference_corpus_normalised_f32() {
+    let Some(vectors) = fixture() else {
+        eprintln!("skipping: HOLOMAP_CLUSTERER_FIXTURE unset");
+        return;
+    };
+    let (clusters, noise_pct) = cluster(l2_normalise_f32(&vectors));
+    assert_in_band("normalised/f32", clusters, noise_pct);
+}
+
+/// Pre-normalised input, f64 accumulation — the JavaScript consumer path.
+#[test]
+fn reference_corpus_normalised_f64() {
+    let Some(vectors) = fixture() else {
+        eprintln!("skipping: HOLOMAP_CLUSTERER_FIXTURE unset");
+        return;
+    };
+    let (clusters, noise_pct) = cluster(l2_normalise_f64(&vectors));
+    assert_in_band("normalised/f64", clusters, noise_pct);
+}
+
+/// The stability characteristic itself, reported as a measurement rather
+/// than asserted as a contract.
+///
+/// All three inputs are the same vectors to within float32 rounding, and
+/// pre-normalising is mathematically a no-op against a pipeline that
+/// normalises internally. This prints how far apart they land anyway.
+///
+/// It asserts only that every regime stays in band — deliberately NOT that
+/// they diverge, and not any particular spread. A future holomap that
+/// narrowed this gap would be an improvement and must not fail a test for
+/// it. The printed table is the artifact worth reading; if you are here
+/// because a number moved, compare the whole table rather than one row.
+#[test]
+fn normalisation_is_a_no_op_that_still_moves_the_result() {
+    let Some(vectors) = fixture() else {
+        eprintln!("skipping: HOLOMAP_CLUSTERER_FIXTURE unset");
+        return;
+    };
+    let regimes = [
+        ("raw", cluster(vectors.clone())),
+        ("normalised/f32", cluster(l2_normalise_f32(&vectors))),
+        ("normalised/f64", cluster(l2_normalise_f64(&vectors))),
+    ];
+
+    let counts: Vec<usize> = regimes.iter().map(|(_, (c, _))| *c).collect();
+    let noises: Vec<f64> = regimes.iter().map(|(_, (_, n))| *n).collect();
+    eprintln!(
+        "spread across mathematically-equivalent inputs: {} clusters, {:.1} noise points",
+        counts.iter().max().unwrap() - counts.iter().min().unwrap(),
+        noises.iter().cloned().fold(f64::MIN, f64::max)
+            - noises.iter().cloned().fold(f64::MAX, f64::min)
+    );
+
+    for (regime, (clusters, noise_pct)) in regimes {
+        assert_in_band(regime, clusters, noise_pct);
+    }
 }
