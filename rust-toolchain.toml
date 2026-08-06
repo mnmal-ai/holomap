@@ -1,0 +1,43 @@
+# Rustup-native toolchain declaration.
+#
+# What it actually does, verified rather than assumed:
+#
+#  - Pins the channel for anything resolving through rustup, as a directory
+#    override (`rustup show` reports "overridden by ... rust-toolchain.toml").
+#  - Installs `wasm32-unknown-unknown` and the listed components on demand, so
+#    `scripts/build-wasm.sh` works on a fresh checkout without a separate
+#    `rustup target add`. Confirmed by removing the target and watching rustup
+#    put it back.
+#
+# What it does NOT do: fix `cargo` failing as a mise shim with "No version is
+# set for shim: cargo". mise does not read this file — with it in place,
+# `mise current rust` still reports "Plugin rust does not have a version set".
+# That half of the problem is handled by the preflight in build-wasm.sh, which
+# names the fix. Do not delete that check on the assumption this file covers
+# it; it does not.
+#
+# `channel = "stable"` deliberately, NOT a pinned version:
+#
+#  - CI is the authority on whether this code builds, and CI uses stable. A
+#    pinned version here would silently override it, because a directory
+#    override wins over whatever `dtolnay/rust-toolchain` installed. Matching
+#    stable keeps local and CI resolving to the same thing.
+#  - The cost is that this tracks stable and will update the toolchain when
+#    rustup next syncs. Adding this file bumped one machine 1.95.0 -> 1.97.1
+#    on the spot. Every gate and the full reference-corpus table were re-run on
+#    the new compiler and were byte-for-byte unchanged — worth knowing, since it
+#    means the numerical sensitivity documented in the test suite is about input
+#    rounding, not about the toolchain.
+#
+# The MSRV is a separate promise and lives in Cargo.toml (`rust-version =
+# "1.93"`). This file is not it; raising one does not raise the other.
+#
+# A `mise.toml` was tried first and reverted: it made mise take over rust, fail
+# to install its own copy, and leave `cargo` unusable on a box where rustup was
+# already serving a working toolchain. This file does not take ownership of the
+# installation, which is the difference that matters.
+
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown"]
