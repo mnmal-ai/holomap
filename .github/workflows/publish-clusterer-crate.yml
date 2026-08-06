@@ -1,0 +1,126 @@
+name: publish-clusterer-crate
+
+# Publishes the `holomap-clusterer` CRATE to crates.io.
+#
+# Third publish workflow, because this repo now ships three independently
+# versioned artifacts and no two of them can share a trigger:
+#
+#   artifact                        workflow                     subject
+#   holomap (crate)                 publish.yml                  release: v
+#   holomap-clusterer (crate)       publish-clusterer-crate.yml  release: crate v
+#   @mnmal-ai/holomap-clusterer     publish-npm.yml              release: npm v
+#
+# The three subjects are mutually exclusive: after "release: ", the next
+# character is 'v', 'c' or 'n'. Verified rather than assumed — see the test in
+# this workflow's PR.
+#
+# TAG is `holomap-clusterer-crate-vX.Y.Z`. Ugly, and deliberately so. The
+# obvious `holomap-clusterer-vX.Y.Z` is ALREADY TAKEN by the npm package's
+# first release, and the crate and the npm package version independently even
+# though both currently read 0.1.0. Reusing the namespace would collide the
+# moment they diverge, and the collision would be silent — `git tag` would
+# simply fail mid-workflow after the crate had already been published, which
+# is unrecoverable. A clumsy name is a cheap price for that.
+#
+# ── ONE-TIME SETUP REQUIRED BEFORE THIS CAN EVER SUCCEED ──────────────────
+#
+# crates.io Trusted Publishing is configured per crate, on that crate's
+# settings page — which requires the crate to exist. `holomap-clusterer` has
+# never been published, so the FIRST publish cannot use OIDC and this workflow
+# will fail at the auth step until one of these is done:
+#
+#   (a) publish 0.1.0 once from a machine with a crates.io token —
+#         cargo publish -p holomap-clusterer
+#       then add the trusted publisher below and use this workflow thereafter;
+#   (b) or, if crates.io now supports pre-registering a trusted publisher for
+#       an unpublished name, do that instead. This was NOT verified — check
+#       the publish settings UI before assuming (a) is necessary.
+#
+# crates.io side (one-time, web UI): crate Settings → Trusted Publishing → add
+#   Repository owner:  mnmal-ai
+#   Repository name:   holomap
+#   Workflow filename: publish-clusterer-crate.yml
+#   Environment:       release
+
+on:
+  push:
+    branches: [main]
+  # Manual retry path, for the same reason publish-npm.yml has one: a failure
+  # after the release commit has landed must not require inventing a second
+  # commit with the same subject.
+  workflow_dispatch:
+
+permissions:
+  contents: write # tag + push the release tag
+  id-token: write # OIDC token exchange for crates.io
+
+jobs:
+  publish:
+    # head_commit does not exist on workflow_dispatch, so short-circuit on the
+    # event name first or every manual run silently skips the job.
+    if: "github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'release: crate v')"
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable as of 2026-06-07
+        with:
+          components: rustfmt, clippy
+
+      # Green-gate before anything irreversible. A crates.io publish cannot be
+      # undone — only yanked, which does not free the version.
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --workspace --all-features
+
+      # Selects the package by NAME, not by index. publish.yml uses
+      # `packages[0]`, which resolves to `holomap` only because cargo happens
+      # to return workspace members alphabetically — that would silently start
+      # publishing the wrong crate the moment a member sorted ahead of it.
+      #
+      # Validation and the GITHUB_OUTPUT write both happen in python, so the
+      # version never passes through the shell. A version carrying a newline
+      # would otherwise append a second key to GITHUB_OUTPUT; the anchored
+      # fullmatch below cannot be satisfied by a multi-line string.
+      - name: Resolve crate version
+        id: ver
+        run: |
+          cargo metadata --no-deps --format-version 1 | python3 -c '
+          import json, os, re, sys
+          pkgs = json.load(sys.stdin)["packages"]
+          v = next(p["version"] for p in pkgs if p["name"] == "holomap-clusterer")
+          if not re.fullmatch(r"\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?", v):
+              sys.exit(f"refusing to publish: version {v!r} is not strict semver")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write(f"version={v}\n")
+          print(f"Resolved version: {v}")
+          '
+
+      - name: Guard against re-tagging
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/holomap-clusterer-crate-v${VERSION}" >/dev/null 2>&1; then
+            echo "tag holomap-clusterer-crate-v${VERSION} already exists — bump the version"
+            exit 1
+          fi
+
+      - name: Authenticate to crates.io (OIDC)
+        uses: rust-lang/crates-io-auth-action@bbd81622f20ce9e2dd9622e3218b975523e45bbe # v1.0.4
+        id: auth
+
+      - name: Publish
+        run: cargo publish -p holomap-clusterer
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+      - name: Tag the release
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          # annotated tags need a committer identity, which the runner lacks
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "holomap-clusterer-crate-v${VERSION}" -m "holomap-clusterer v${VERSION} (crate)"
+          git push origin "holomap-clusterer-crate-v${VERSION}"
