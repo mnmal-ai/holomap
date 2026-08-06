@@ -145,7 +145,11 @@ The package exports both classes and takes no view on how you select one. The pa
 
 Supply the auth token from a source pnpm trusts — `~/.npmrc` locally, a CI auth step in workflows. Never put a credential in a committed project `.npmrc`; pnpm ≥11 ignores it there anyway, deliberately.
 
-**Not yet published.** `0.1.0` is unreleased on purpose: freezing a public API before any real integration has exercised it buys nothing. Consume it via `file:`/`link:` from a checkout until a consumer has actually run it in anger.
+```sh
+pnpm add @mnmal-ai/holomap-clusterer
+```
+
+`0.1.0` was deliberately held back until a consumer had exercised the API for real, rather than frozen on the day it was written. coda did that first — the shared validator fitted its call sites unchanged, the re-export shim needed no additions, and both backends were measured against its reference corpus. Only then was it released.
 
 ### Cutting a release
 
@@ -156,7 +160,9 @@ Two things that are easy to get wrong:
 - **The trigger is `release: npm v`, not `release: v`.** The latter belongs to `publish.yml`, which releases the `holomap` *crate* to crates.io. The two artifacts version independently — the crate is 0.2.0 while this package is 0.1.0 — so one trigger cannot serve both. They are mutually exclusive by construction, since `release: n…` never matches `release: v`.
 - **The tag is `holomap-clusterer-vX.Y.Z`.** Plain `vX.Y.Z` is the crate's namespace and already holds `v0.1.0` and `v0.2.0`; an npm 0.1.0 release tagged that way would collide with the crate's first release.
 
-A note on visibility: this repo is public, and GitHub Packages npm packages inherit repository visibility, so `publishConfig.access: restricted` — an npmjs concept — does **not** make this package private. It will be publicly listed. It is not casually installable, though: the GitHub Packages npm registry demands an authenticated token for every read, public packages included. Genuine privacy would require publishing from a private repository, and no workflow setting can substitute for that.
+A note on visibility: GitHub Packages npm packages inherit **repository** visibility, and `publishConfig.access: restricted` is an npmjs concept that does not override it. This repository is private, so the package is genuinely private — not merely token-gated.
+
+That ordering is worth remembering if the repo's visibility ever changes: it was public until 2026-08-05, and while it was, no workflow or `publishConfig` setting could have made the package private. The repository is the control, not the package config.
 
 ## Building the wasm artifact
 
