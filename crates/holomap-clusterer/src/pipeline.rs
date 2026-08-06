@@ -64,6 +64,19 @@ use crate::protocol::{Request, Response, PROTOCOL_VERSION};
 use hdbscan::{DistanceMetric, Hdbscan, HdbscanHyperParams};
 use holomap::{Holomap, Metric};
 
+/// Run the reduce→cluster pipeline: L2-normalise → optional holomap
+/// reduction → HDBSCAN.
+///
+/// Never panics and never aborts on bad input. Every failure — an unsupported
+/// protocol version, empty input, ragged or zero-width vectors, a reduction
+/// or clustering error — comes back as a [`Response`] with `error` set and
+/// `assignments` empty. That is deliberate: the binary wrapping this is a
+/// long-lived per-line server, and one malformed request must not take down
+/// the batch behind it.
+///
+/// Note it L2-normalises internally as step 1, so pre-normalising the input
+/// is mathematically redundant. It is not behaviourally redundant — see the
+/// stability note in the module docs before assuming the two are equivalent.
 pub fn run_pipeline(req: &Request) -> Response {
     if req.protocol_version != PROTOCOL_VERSION {
         return error_response(format!(
