@@ -1,0 +1,476 @@
+# Review package: 283df1a..aea1c74
+
+## Commits
+aea1c74 feat: WasmClusterer — the bundled default backend
+
+## Files changed
+ npm/package.json                        |   1 +
+ npm/src/index.ts                        |   1 +
+ npm/src/wasm-clusterer.ts               |  89 +++++++++++++++++++++++++++
+ npm/test/ts-extension-loader.mjs        |  25 ++++++++
+ npm/test/wasm-clusterer.test.ts         |  52 ++++++++++++++++
+ npm/test/worker-smoke.test.ts           |  41 ++++++++++++
+ npm/wasm/holomap_clusterer.d.ts         |   4 ++
+ npm/wasm/holomap_clusterer.js           | 106 ++++++++++++++++++++++++++++++++
+ npm/wasm/holomap_clusterer_bg.wasm      | Bin 0 -> 261036 bytes
+ npm/wasm/holomap_clusterer_bg.wasm.d.ts |   9 +++
+ npm/wasm/package.json                   |   3 +
+ scripts/build-wasm.sh                   |  35 +++++++++++
+ 12 files changed, 366 insertions(+)
+
+## Diff
+diff --git a/npm/package.json b/npm/package.json
+index d23ce2b..4b592f3 100644
+--- a/npm/package.json
++++ b/npm/package.json
+@@ -4,19 +4,20 @@
+   "description": "Deterministic reduce→cluster: holomap UMAP + HDBSCAN. One Clusterer interface, wasm and subprocess backends.",
+   "license": "MIT OR Apache-2.0",
+   "repository": { "type": "git", "url": "git+https://github.com/mnmal-ai/holomap.git", "directory": "npm" },
+   "type": "module",
+   "main": "./dist/index.js",
+   "types": "./dist/index.d.ts",
+   "exports": { ".": { "import": "./dist/index.js", "types": "./dist/index.d.ts" } },
+   "files": ["dist", "wasm"],
+   "scripts": {
+     "build": "tsc -p tsconfig.json",
++    "build:wasm": "bash ../scripts/build-wasm.sh",
+     "test": "vitest run",
+     "check-types": "tsc -p tsconfig.json --noEmit"
+   },
+   "devDependencies": {
+     "typescript": "^5.7.0",
+     "vitest": "^3.0.0",
+     "@types/node": "^22.0.0"
+   }
+ }
+diff --git a/npm/src/index.ts b/npm/src/index.ts
+index dbd3b5f..f0e8e04 100644
+--- a/npm/src/index.ts
++++ b/npm/src/index.ts
+@@ -1,2 +1,3 @@
+ export * from './types.js';
+ export { SubprocessClusterer } from './subprocess-clusterer.js';
++export { WasmClusterer } from './wasm-clusterer.js';
+diff --git a/npm/src/wasm-clusterer.ts b/npm/src/wasm-clusterer.ts
+new file mode 100644
+index 0000000..a66c4a2
+--- /dev/null
++++ b/npm/src/wasm-clusterer.ts
+@@ -0,0 +1,89 @@
++import { createRequire } from 'node:module';
++import {
++  type ClusterParams,
++  type ClusterResult,
++  ClustererError,
++  type Clusterer
++} from './types.js';
++
++// wasm-pack --target nodejs emits CJS glue. createRequire loads it from an
++// ESM module without a bundler step, and resolves the .wasm relative to the
++// package's own directory so consumers never handle asset paths.
++const require = createRequire(import.meta.url);
++
++interface WasmModule {
++  reduce_and_cluster(
++    vectors: Float32Array,
++    nFeatures: number,
++    nComponents: number,
++    nNeighbors: number,
++    minClusterSize: number,
++    seed: number
++  ): Int32Array;
++}
++
++/**
++ * Bundled wasm backend — the default.
++ *
++ * The module is loaded lazily on first use, never at import time, so this
++ * file can be imported inside a worker_threads Worker without side effects.
++ * Consumers SHOULD run it in a worker: the batch is CPU-bound for tens of
++ * seconds and would otherwise block the event loop.
++ */
++export class WasmClusterer implements Clusterer {
++  #module: WasmModule | undefined;
++
++  #load(): WasmModule {
++    this.#module ??= require('../wasm/holomap_clusterer.js') as WasmModule;
++    return this.#module;
++  }
++
++  async cluster(
++    vectors: readonly Float32Array[],
++    params: ClusterParams
++  ): Promise<ClusterResult> {
++    if (vectors.length === 0) throw new ClustererError('empty input');
++
++    const nFeatures = vectors[0]!.length;
++    if (vectors.some((v) => v.length !== nFeatures)) {
++      throw new ClustererError('vector dimensions inconsistent');
++    }
++
++    // The Rust binding takes seed as f64 and casts to u64. That cast
++    // saturates: NaN and negatives silently become 0, and anything above
++    // 2^53 has already lost precision as a JS number. A seed that quietly
++    // becomes a different seed is the worst failure this API can have —
++    // determinism is the whole product — so reject rather than coerce.
++    if (!Number.isInteger(params.seed) || params.seed < 0 || params.seed > Number.MAX_SAFE_INTEGER) {
++      throw new ClustererError(
++        `seed must be a non-negative integer <= 2^53-1, got ${params.seed}`
++      );
++    }
++
++    // Flatten to row-major. One copy — negligible beside an O(N^2*d) kNN,
++    // and it keeps the production Clusterer signature unchanged.
++    const flat = new Float32Array(vectors.length * nFeatures);
++    for (let i = 0; i < vectors.length; i++) flat.set(vectors[i]!, i * nFeatures);
++
++    let assignments: Int32Array;
++    try {
++      assignments = this.#load().reduce_and_cluster(
++        flat,
++        nFeatures,
++        params.nComponents,
++        params.nNeighbors,
++        params.minClusterSize,
++        params.seed
++      );
++    } catch (e) {
++      throw new ClustererError(e instanceof Error ? e.message : String(e));
++    }
++
++    if (assignments.length !== vectors.length) {
++      throw new ClustererError(
++        `assignment count ${assignments.length} != input count ${vectors.length}`
++      );
++    }
++    return { assignments: Array.from(assignments) };
++  }
++}
+diff --git a/npm/test/ts-extension-loader.mjs b/npm/test/ts-extension-loader.mjs
+new file mode 100644
+index 0000000..3ffb058
+--- /dev/null
++++ b/npm/test/ts-extension-loader.mjs
+@@ -0,0 +1,25 @@
++// Node's --experimental-strip-types resolves import specifiers literally:
++// `./foo.js` is looked up as a file named foo.js on disk, with no fallback
++// to a sibling foo.ts (https://nodejs.org/api/typescript.html — "file
++// extensions are mandatory... import './file.ts', not import './file.js'").
++// This repo's src/ uses NodeNext-style `.js` specifiers pointing at `.ts`
++// files (required for the tsc-emitted dist/ output and honoured by
++// vitest/Vite's resolver), so running src/*.ts directly under raw
++// --experimental-strip-types needs this one-line remap. Registered
++// synchronously, in-thread, via `--import` in the worker-smoke test's
++// execArgv — registerHooks (not the deprecated async module.register) is
++// the current API for an in-thread resolve hook this simple.
++import { registerHooks } from 'node:module';
++
++registerHooks({
++  resolve(specifier, context, nextResolve) {
++    try {
++      return nextResolve(specifier, context);
++    } catch (err) {
++      if (err?.code === 'ERR_MODULE_NOT_FOUND' && specifier.endsWith('.js')) {
++        return nextResolve(`${specifier.slice(0, -3)}.ts`, context);
++      }
++      throw err;
++    }
++  }
++});
+diff --git a/npm/test/wasm-clusterer.test.ts b/npm/test/wasm-clusterer.test.ts
+new file mode 100644
+index 0000000..f8aea19
+--- /dev/null
++++ b/npm/test/wasm-clusterer.test.ts
+@@ -0,0 +1,52 @@
++import { describe, expect, it } from 'vitest';
++import { ClustererError, WasmClusterer } from '../src/index.js';
++
++function blobs(): Float32Array[] {
++  let state = 42n;
++  const next = () => {
++    state = (state * 6364136223846793005n + 1442695040888963407n) & 0xffffffffffffffffn;
++    return Number(state >> 33n) / 0xffffffff - 0.5;
++  };
++  const out: Float32Array[] = [];
++  for (let blob = 0; blob < 3; blob++) {
++    for (let i = 0; i < 30; i++) {
++      const v = new Float32Array(8);
++      v[blob * 2] = 10.0;
++      for (let j = 0; j < 8; j++) v[j] += next() * 0.5;
++      out.push(v);
++    }
++  }
++  return out;
++}
++
++const PARAMS = { nComponents: 0, nNeighbors: 15, minClusterSize: 5, seed: 42 };
++
++describe('WasmClusterer', () => {
++  it('separates three blobs', async () => {
++    const result = await new WasmClusterer().cluster(blobs(), PARAMS);
++    expect(new Set(result.assignments.filter((l) => l >= 0)).size).toBe(3);
++  });
++
++  it('is deterministic across runs', async () => {
++    const c = new WasmClusterer();
++    const a = await c.cluster(blobs(), PARAMS);
++    const b = await c.cluster(blobs(), PARAMS);
++    expect(a.assignments).toEqual(b.assignments);
++  });
++
++  it('throws ClustererError on ragged input', async () => {
++    const ragged = [new Float32Array(8), new Float32Array(5)];
++    await expect(new WasmClusterer().cluster(ragged, PARAMS)).rejects.toThrow(ClustererError);
++  });
++
++  it.each([Number.NaN, -1, 1.5, 2 ** 53])('rejects seed %p rather than coercing it', async (seed) => {
++    await expect(
++      new WasmClusterer().cluster(blobs(), { ...PARAMS, seed })
++    ).rejects.toThrow(/seed must be/);
++  });
++
++  it('throws ClustererError above MAX_ROWS', async () => {
++    const many = Array.from({ length: 50_001 }, () => new Float32Array(2));
++    await expect(new WasmClusterer().cluster(many, PARAMS)).rejects.toThrow(/MAX_ROWS/);
++  });
++});
+diff --git a/npm/test/worker-smoke.test.ts b/npm/test/worker-smoke.test.ts
+new file mode 100644
+index 0000000..75e9dd8
+--- /dev/null
++++ b/npm/test/worker-smoke.test.ts
+@@ -0,0 +1,41 @@
++import { Worker } from 'node:worker_threads';
++import { describe, expect, it } from 'vitest';
++
++const WORKER = `
++import { parentPort } from 'node:worker_threads';
++import { WasmClusterer } from '${new URL('../src/index.ts', import.meta.url).pathname}';
++const vectors = [];
++for (let blob = 0; blob < 3; blob++)
++  for (let i = 0; i < 30; i++) {
++    const v = new Float32Array(8);
++    v[blob * 2] = 10.0;
++    v[7] = i * 0.01;
++    vectors.push(v);
++  }
++const r = await new WasmClusterer().cluster(vectors,
++  { nComponents: 0, nNeighbors: 15, minClusterSize: 5, seed: 42 });
++parentPort.postMessage(r.assignments);
++`;
++
++// Node's --experimental-strip-types resolves import specifiers literally
++// (https://nodejs.org/api/typescript.html) — a `./foo.js` specifier is never
++// remapped to a sibling `foo.ts`. This repo's src/ uses `.js` specifiers per
++// NodeNext moduleResolution (correct for the tsc-emitted dist/ output, and
++// already handled by vitest's own Vite-based resolver for every other test
++// in this suite). Only this test runs raw node against the .ts source
++// directly, so it alone needs the one-line extension-remap loader below.
++const LOADER = new URL('./ts-extension-loader.mjs', import.meta.url).pathname;
++
++describe('worker_threads', () => {
++  it('loads and runs inside a Worker with no top-level side effects', async () => {
++    const assignments = await new Promise<number[]>((resolve, reject) => {
++      const w = new Worker(WORKER, {
++        eval: true,
++        execArgv: ['--experimental-strip-types', '--import', LOADER]
++      });
++      w.on('message', resolve);
++      w.on('error', reject);
++    });
++    expect(new Set(assignments.filter((l) => l >= 0)).size).toBe(3);
++  });
++});
+diff --git a/npm/wasm/holomap_clusterer.d.ts b/npm/wasm/holomap_clusterer.d.ts
+new file mode 100644
+index 0000000..97f6778
+--- /dev/null
++++ b/npm/wasm/holomap_clusterer.d.ts
+@@ -0,0 +1,4 @@
++/* tslint:disable */
++/* eslint-disable */
++
++export function reduce_and_cluster(vectors: Float32Array, n_features: number, n_components: number, n_neighbors: number, min_cluster_size: number, seed: number): Int32Array;
+diff --git a/npm/wasm/holomap_clusterer.js b/npm/wasm/holomap_clusterer.js
+new file mode 100644
+index 0000000..48a8618
+--- /dev/null
++++ b/npm/wasm/holomap_clusterer.js
+@@ -0,0 +1,106 @@
++/* @ts-self-types="./holomap_clusterer.d.ts" */
++
++/**
++ * @param {Float32Array} vectors
++ * @param {number} n_features
++ * @param {number} n_components
++ * @param {number} n_neighbors
++ * @param {number} min_cluster_size
++ * @param {number} seed
++ * @returns {Int32Array}
++ */
++function reduce_and_cluster(vectors, n_features, n_components, n_neighbors, min_cluster_size, seed) {
++    const ptr0 = passArrayF32ToWasm0(vectors, wasm.__wbindgen_malloc);
++    const len0 = WASM_VECTOR_LEN;
++    const ret = wasm.reduce_and_cluster(ptr0, len0, n_features, n_components, n_neighbors, min_cluster_size, seed);
++    if (ret[3]) {
++        throw takeFromExternrefTable0(ret[2]);
++    }
++    var v2 = getArrayI32FromWasm0(ret[0], ret[1]).slice();
++    wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
++    return v2;
++}
++exports.reduce_and_cluster = reduce_and_cluster;
++function __wbg_get_imports() {
++    const import0 = {
++        __proto__: null,
++        __wbg_Error_92b29b0548f8b746: function(arg0, arg1) {
++            const ret = Error(getStringFromWasm0(arg0, arg1));
++            return ret;
++        },
++        __wbindgen_init_externref_table: function() {
++            const table = wasm.__wbindgen_externrefs;
++            const offset = table.grow(4);
++            table.set(0, undefined);
++            table.set(offset + 0, undefined);
++            table.set(offset + 1, null);
++            table.set(offset + 2, true);
++            table.set(offset + 3, false);
++        },
++    };
++    return {
++        __proto__: null,
++        "./holomap_clusterer_bg.js": import0,
++    };
++}
++
++function getArrayI32FromWasm0(ptr, len) {
++    ptr = ptr >>> 0;
++    return getInt32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
++}
++
++let cachedFloat32ArrayMemory0 = null;
++function getFloat32ArrayMemory0() {
++    if (cachedFloat32ArrayMemory0 === null || cachedFloat32ArrayMemory0.byteLength === 0) {
++        cachedFloat32ArrayMemory0 = new Float32Array(wasm.memory.buffer);
++    }
++    return cachedFloat32ArrayMemory0;
++}
++
++let cachedInt32ArrayMemory0 = null;
++function getInt32ArrayMemory0() {
++    if (cachedInt32ArrayMemory0 === null || cachedInt32ArrayMemory0.byteLength === 0) {
++        cachedInt32ArrayMemory0 = new Int32Array(wasm.memory.buffer);
++    }
++    return cachedInt32ArrayMemory0;
++}
++
++function getStringFromWasm0(ptr, len) {
++    return decodeText(ptr >>> 0, len);
++}
++
++let cachedUint8ArrayMemory0 = null;
++function getUint8ArrayMemory0() {
++    if (cachedUint8ArrayMemory0 === null || cachedUint8ArrayMemory0.byteLength === 0) {
++        cachedUint8ArrayMemory0 = new Uint8Array(wasm.memory.buffer);
++    }
++    return cachedUint8ArrayMemory0;
++}
++
++function passArrayF32ToWasm0(arg, malloc) {
++    const ptr = malloc(arg.length * 4, 4) >>> 0;
++    getFloat32ArrayMemory0().set(arg, ptr / 4);
++    WASM_VECTOR_LEN = arg.length;
++    return ptr;
++}
++
++function takeFromExternrefTable0(idx) {
++    const value = wasm.__wbindgen_externrefs.get(idx);
++    wasm.__externref_table_dealloc(idx);
++    return value;
++}
++
++let cachedTextDecoder = new TextDecoder('utf-8', { ignoreBOM: true, fatal: true });
++cachedTextDecoder.decode();
++function decodeText(ptr, len) {
++    return cachedTextDecoder.decode(getUint8ArrayMemory0().subarray(ptr, ptr + len));
++}
++
++let WASM_VECTOR_LEN = 0;
++
++const wasmPath = `${__dirname}/holomap_clusterer_bg.wasm`;
++const wasmBytes = require('fs').readFileSync(wasmPath);
++const wasmModule = new WebAssembly.Module(wasmBytes);
++let wasmInstance = new WebAssembly.Instance(wasmModule, __wbg_get_imports());
++let wasm = wasmInstance.exports;
++wasm.__wbindgen_start();
+diff --git a/npm/wasm/holomap_clusterer_bg.wasm b/npm/wasm/holomap_clusterer_bg.wasm
+new file mode 100644
+index 0000000..04cd881
+Binary files /dev/null and b/npm/wasm/holomap_clusterer_bg.wasm differ
+diff --git a/npm/wasm/holomap_clusterer_bg.wasm.d.ts b/npm/wasm/holomap_clusterer_bg.wasm.d.ts
+new file mode 100644
+index 0000000..48dbb56
+--- /dev/null
++++ b/npm/wasm/holomap_clusterer_bg.wasm.d.ts
+@@ -0,0 +1,9 @@
++/* tslint:disable */
++/* eslint-disable */
++export const memory: WebAssembly.Memory;
++export const reduce_and_cluster: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
++export const __wbindgen_externrefs: WebAssembly.Table;
++export const __wbindgen_malloc: (a: number, b: number) => number;
++export const __externref_table_dealloc: (a: number) => void;
++export const __wbindgen_free: (a: number, b: number, c: number) => void;
++export const __wbindgen_start: () => void;
+diff --git a/npm/wasm/package.json b/npm/wasm/package.json
+new file mode 100644
+index 0000000..5bbefff
+--- /dev/null
++++ b/npm/wasm/package.json
+@@ -0,0 +1,3 @@
++{
++  "type": "commonjs"
++}
+diff --git a/scripts/build-wasm.sh b/scripts/build-wasm.sh
+new file mode 100755
+index 0000000..55f9550
+--- /dev/null
++++ b/scripts/build-wasm.sh
+@@ -0,0 +1,35 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++# wasm-pack is NOT used: wasm-pack 0.15.0 invokes `cargo build --out-dir`
++# internally, and cargo 1.95.0 renamed that unstable flag to --artifact-dir,
++# so every wasm-pack build fails. Reproduced independently 2026-08-05.
++#
++# The direct route is also strictly better: wasm-bindgen-cli MUST match the
++# wasm-bindgen crate version exactly, and a mismatch fails in confusing ways.
++# wasm-pack hid that coupling; here it is explicit and derived from Cargo.lock.
++
++cd "$(dirname "${BASH_SOURCE[0]}")/.."
++
++WB_VERSION=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | grep '^version' | cut -d'"' -f2)
++echo "matching wasm-bindgen-cli to crate version $WB_VERSION"
++cargo install wasm-bindgen-cli --version "$WB_VERSION" --locked
++
++RUSTFLAGS="-C target-feature=+simd128" \
++  cargo build --release --target wasm32-unknown-unknown -p holomap-clusterer --features wasm
++
++wasm-bindgen --target nodejs --out-dir npm/wasm \
++  target/wasm32-unknown-unknown/release/holomap_clusterer.wasm
++
++# wasm-bindgen's --target nodejs glue is CommonJS (`exports.foo = ...`), but
++# npm/package.json declares "type": "module" for the rest of the package.
++# Without this marker Node resolves npm/wasm/*.js as ESM by nearest-
++# package.json lookup and `exports is not defined` at load time. This file
++# scopes CommonJS back to just the wasm output directory.
++cat > npm/wasm/package.json <<'EOF'
++{
++  "type": "commonjs"
++}
++EOF
++
++ls -la npm/wasm/

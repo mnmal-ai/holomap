@@ -1,0 +1,617 @@
+# Review package: 6ce972e84b594d8384149ddce451d23f6cc9e9e3..HEAD
+
+## Commits
+01ea9e5 feat: land holomap-clusterer, moved from coda
+
+## Files changed
+ Cargo.lock                                 |  50 ++++++++
+ Cargo.toml                                 |   3 +
+ crates/holomap-clusterer/Cargo.toml        |  21 ++++
+ crates/holomap-clusterer/src/lib.rs        |   2 +
+ crates/holomap-clusterer/src/main.rs       |  31 +++++
+ crates/holomap-clusterer/src/pipeline.rs   | 188 +++++++++++++++++++++++++++++
+ crates/holomap-clusterer/src/protocol.rs   |  33 +++++
+ crates/holomap-clusterer/tests/protocol.rs | 135 +++++++++++++++++++++
+ 8 files changed, 463 insertions(+)
+
+## Diff
+diff --git a/Cargo.lock b/Cargo.lock
+index 5224144..08dc3a5 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -147,39 +147,59 @@ checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
+ dependencies = [
+  "foldhash",
+ ]
+ 
+ [[package]]
+ name = "hashbrown"
+ version = "0.17.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+ 
++[[package]]
++name = "hdbscan"
++version = "0.12.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "466aa8bfaa22c81efcf67c84e6ad046de13a05c6cc9d41a5094361bff464247a"
++dependencies = [
++ "kdtree",
++ "num-traits",
++]
++
+ [[package]]
+ name = "heck"
+ version = "0.5.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
+ 
+ [[package]]
+ name = "holomap"
+ version = "0.2.0"
+ dependencies = [
+  "nalgebra",
+  "ndarray",
+  "proptest",
+  "rand",
+  "rand_pcg",
+  "serde",
+  "serde_json",
+ ]
+ 
++[[package]]
++name = "holomap-clusterer"
++version = "0.1.0"
++dependencies = [
++ "hdbscan",
++ "holomap",
++ "serde",
++ "serde_json",
++]
++
+ [[package]]
+ name = "id-arena"
+ version = "2.3.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
+ 
+ [[package]]
+ name = "indexmap"
+ version = "2.14.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+@@ -190,20 +210,30 @@ dependencies = [
+  "serde",
+  "serde_core",
+ ]
+ 
+ [[package]]
+ name = "itoa"
+ version = "1.0.18"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+ 
++[[package]]
++name = "kdtree"
++version = "0.7.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "0f0a0e9f770b65bac9aad00f97a67ab5c5319effed07f6da385da3c2115e47ba"
++dependencies = [
++ "num-traits",
++ "thiserror",
++]
++
+ [[package]]
+ name = "leb128fmt"
+ version = "0.1.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
+ 
+ [[package]]
+ name = "libc"
+ version = "0.2.186"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+@@ -585,20 +615,40 @@ version = "3.27.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
+ dependencies = [
+  "fastrand",
+  "getrandom 0.4.2",
+  "once_cell",
+  "rustix",
+  "windows-sys",
+ ]
+ 
++[[package]]
++name = "thiserror"
++version = "1.0.69"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "b6aaf5339b578ea85b50e080feb250a3e8ae8cfcdff9a461c9ec2904bc923f52"
++dependencies = [
++ "thiserror-impl",
++]
++
++[[package]]
++name = "thiserror-impl"
++version = "1.0.69"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "syn",
++]
++
+ [[package]]
+ name = "typenum"
+ version = "1.20.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
+ 
+ [[package]]
+ name = "unarray"
+ version = "0.1.4"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+diff --git a/Cargo.toml b/Cargo.toml
+index a1d9555..249efde 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -1,10 +1,13 @@
++[workspace]
++members = [".", "crates/holomap-clusterer"]
++
+ [package]
+ name = "holomap"
+ version = "0.2.0"
+ edition = "2024"
+ rust-version = "1.93"
+ license = "MIT OR Apache-2.0"
+ description = "Deterministic UMAP — the bulk, on the boundary. Same input, same params, same seed: bit-identical embeddings."
+ repository = "https://github.com/mnmal-ai/holomap"
+ keywords = ["umap", "dimension-reduction", "deterministic", "embedding", "manifold"]
+ categories = ["science", "algorithms", "mathematics"]
+diff --git a/crates/holomap-clusterer/Cargo.toml b/crates/holomap-clusterer/Cargo.toml
+new file mode 100644
+index 0000000..472b57d
+--- /dev/null
++++ b/crates/holomap-clusterer/Cargo.toml
+@@ -0,0 +1,21 @@
++[package]
++name = "holomap-clusterer"
++version = "0.1.0"
++edition = "2021"
++license = "MIT OR Apache-2.0"
++description = "Deterministic reduce→cluster pipeline: holomap UMAP + HDBSCAN. JSON-lines peripheral and wasm binding."
++repository = "https://github.com/mnmal-ai/holomap"
++keywords = ["clustering", "hdbscan", "umap", "deterministic", "embedding"]
++categories = ["science", "algorithms"]
++
++[dependencies]
++serde = { version = "1", features = ["derive"] }
++serde_json = "1"
++# rayon disabled deliberately: parallel MST construction would admit
++# thread-scheduling non-determinism. `serial` gives us .cluster().
++hdbscan = { version = "0.12", default-features = false, features = ["serial"] }
++holomap = { version = "0.2", path = "../.." }
++
++[[bin]]
++name = "holomap-clusterer"
++path = "src/main.rs"
+diff --git a/crates/holomap-clusterer/src/lib.rs b/crates/holomap-clusterer/src/lib.rs
+new file mode 100644
+index 0000000..bb545bc
+--- /dev/null
++++ b/crates/holomap-clusterer/src/lib.rs
+@@ -0,0 +1,2 @@
++pub mod pipeline;
++pub mod protocol;
+diff --git a/crates/holomap-clusterer/src/main.rs b/crates/holomap-clusterer/src/main.rs
+new file mode 100644
+index 0000000..c404548
+--- /dev/null
++++ b/crates/holomap-clusterer/src/main.rs
+@@ -0,0 +1,31 @@
++//! JSON-lines loop: one Request per stdin line, one Response per stdout
++//! line, until EOF. Errors are per-line responses, never process aborts —
++//! the TS worker treats a dead peripheral as a cycle failure, a per-line
++//! error as a data failure.
++use std::io::{self, BufRead, Write};
++
++use holomap_clusterer::pipeline::run_pipeline;
++use holomap_clusterer::protocol::{Response, PROTOCOL_VERSION};
++
++fn main() {
++    let stdin = io::stdin();
++    let mut stdout = io::stdout().lock();
++    for line in stdin.lock().lines() {
++        let line = match line {
++            Ok(l) if l.trim().is_empty() => continue,
++            Ok(l) => l,
++            Err(_) => break,
++        };
++        let response = match serde_json::from_str(&line) {
++            Ok(request) => run_pipeline(&request),
++            Err(e) => Response {
++                protocol_version: PROTOCOL_VERSION,
++                assignments: vec![],
++                probabilities: None,
++                error: Some(format!("bad request: {e}")),
++            },
++        };
++        let out = serde_json::to_string(&response).expect("response serialises");
++        writeln!(stdout, "{out}").expect("stdout write");
++    }
++}
+diff --git a/crates/holomap-clusterer/src/pipeline.rs b/crates/holomap-clusterer/src/pipeline.rs
+new file mode 100644
+index 0000000..b73cb6e
+--- /dev/null
++++ b/crates/holomap-clusterer/src/pipeline.rs
+@@ -0,0 +1,188 @@
++//! Reduce→cluster pipeline.
++//!
++//! # Crate choices
++//!
++//! ## HDBSCAN: `hdbscan` 0.12 (serial feature only)
++//!
++//! Pure-Rust implementation using Prim's MST and single-linkage condensation —
++//! zero RNG, fully deterministic given fixed input order.  The "parallel"
++//! feature (rayon) is disabled to prevent any thread-scheduling non-determinism
++//! from creeping in via parallel MST construction.  Returns `Vec<i32>` with -1
++//! for noise; no membership-probability API is exposed by this crate.
++//!
++//! ## Reduction: `holomap` — seedable deterministic UMAP (git → crates.io on publish)
++//!
++//! Replaces the PCA (nalgebra SVD) stage that was the only viable Rust
++//! reduction in Phase-0: PCA is a linear transform and cannot preserve the
++//! local neighbourhood density of 1024-d cosine-normalised text embeddings —
++//! see coda's `docs/2026-06-06-phase0-clusterer-spike-findings.md` for the root-cause
++//! analysis and the FALLBACK-Python verdict.
++//!
++//! holomap (rev 71810a1) is the project's own seedable UMAP-class Rust crate.
++//! The standalone gate (2026-06-07) produced 36 clusters / 27.2% noise / 7-8
++//! coherent qualitative samples / byte-identical determinism / 2.46 s — all
++//! hard gates green.  That result reopens the GO-Rust path.
++//!
++//! ## Pipeline metric
++//!
++//! Corpus embeddings are bge-m3 / 1024-d, L2-normalised.  The pipeline
++//! preserves the normalisation (see `l2_normalise`) and then passes
++//! `Metric::Cosine` to holomap so the kNN stage uses cosine distance — the
++//! natural choice for magnitude-normalised text embeddings and matching the
++//! Python UMAP baseline (`metric='cosine'`).  On the unit sphere cosine
++//! distance is equivalent to squared Euclidean, but the cosine path gives
++//! numerically cleaner distances because the dot-product accumulates in f64.
++//!
++//! ## umap-learn parameter correspondence
++//!
++//! The Python baseline uses:
++//!   `UMAP(n_components=10, n_neighbors=15, min_dist=0.0, metric='cosine')`
++//! holomap defaults: n_components=2, n_neighbors=15, min_dist=0.1, metric=Euclidean.
++//! We override n_components, n_neighbors, metric, and seed from the protocol params.
++//! min_dist is left at holomap's default (0.1) — NOT 0.0 — because the
++//! standalone gate confirmed 0.1 passes the hard gates (36/27.2%) while 0.0
++//! regresses (13/45.2%).  holomap's SGD schedule handles the zero-min-dist
++//! edge case differently from umap-learn's.  spread (1.0) and n_epochs (auto)
++//! match umap-learn's defaults and are left at holomap's defaults.
++//!
++//! ## Determinism contract
++//!
++//! `hdbscan` serial: deterministic by algorithm (graph-based MST, no RNG).
++//! `holomap`: seeded PCG RNG, seed supplied from the protocol `seed` field.
++//! Thread pool: neither crate uses rayon in the paths we call.
++//! Result: same input + same seed → byte-identical assignments, always.
++
++use crate::protocol::{Request, Response, PROTOCOL_VERSION};
++use hdbscan::{DistanceMetric, Hdbscan, HdbscanHyperParams};
++use holomap::{Holomap, Metric};
++
++pub fn run_pipeline(req: &Request) -> Response {
++    if req.protocol_version != PROTOCOL_VERSION {
++        return error_response(format!(
++            "unsupported protocol_version {}",
++            req.protocol_version
++        ));
++    }
++    if req.vectors.is_empty() {
++        return error_response("empty input".to_string());
++    }
++    let dims: Vec<usize> = req.vectors.iter().map(|v| v.len()).collect();
++    if dims.windows(2).any(|w| w[0] != w[1]) {
++        return error_response("vector dimensions inconsistent".to_string());
++    }
++    let dim = dims[0];
++    if dim == 0 {
++        return error_response("zero-dimensional vectors".to_string());
++    }
++
++    // Step 1 — L2-normalise (cosine ~ euclidean on unit sphere; holomap's
++    // Metric::Cosine handles the general case, but normalisation here matches
++    // the Python baseline and is numerically cheap).
++    let normed = l2_normalise(&req.vectors);
++
++    // Step 2 — optional holomap UMAP reduction.
++    let to_cluster: Vec<Vec<f32>> = if req.params.n_components == 0 {
++        // No reduction: cluster the normalised vectors directly.
++        normed
++    } else {
++        match holomap_reduce(&normed, req.params.n_components, req.params.n_neighbors, req.params.seed) {
++            Ok(v) => v,
++            Err(e) => return error_response(format!("holomap reduction failed: {e}")),
++        }
++    };
++
++    // Step 3 — HDBSCAN (serial, no rayon, fully deterministic).
++    // min_samples is intentionally NOT set — the `hdbscan` crate defaults it to
++    // min_cluster_size, which matches sklearn's `HDBSCAN(min_cluster_size=5)`
++    // default (min_samples=None → min_cluster_size).  Setting it to n_neighbors
++    // (15) degrades cluster count drastically (8 vs 36 on the reference corpus).
++    // NOTE this also applies to the n_components=0 direct-HDBSCAN path (used by
++    // dynamics split detection): the previous min_samples=n_neighbors wiring was
++    // the cross-binding INCONSISTENCY — clusterer.py never set min_samples, so
++    // sklearn already defaulted it to min_cluster_size there.  Leaving it unset
++    // here makes both bindings agree; the change is deliberate.
++    let hp = HdbscanHyperParams::builder()
++        .min_cluster_size(req.params.min_cluster_size)
++        .dist_metric(DistanceMetric::Euclidean)
++        .build();
++
++    let clusterer = Hdbscan::new(&to_cluster, hp);
++    match clusterer.cluster() {
++        Ok(labels) => Response {
++            protocol_version: PROTOCOL_VERSION,
++            assignments: labels,
++            // The `hdbscan` crate (0.12) does not expose membership
++            // probabilities — only the label vec is returned by .cluster().
++            probabilities: None,
++            error: None,
++        },
++        Err(e) => error_response(format!("HDBSCAN failed: {e:?}")),
++    }
++}
++
++/// L2-normalise every vector. Zero vectors are left as-is (all-zeros — they
++/// will be noise outliers in HDBSCAN, which is appropriate).
++fn l2_normalise(vecs: &[Vec<f32>]) -> Vec<Vec<f32>> {
++    vecs.iter()
++        .map(|v| {
++            let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
++            if norm == 0.0 {
++                v.clone()
++            } else {
++                v.iter().map(|x| x / norm).collect()
++            }
++        })
++        .collect()
++}
++
++/// Reduce via holomap (seedable UMAP-class).
++///
++/// Parameter choices:
++/// - metric = Cosine: corpus embeddings are bge-m3 / L2-normalised; cosine is
++///   the natural distance for text embeddings and matches the Python baseline.
++/// - min_dist = 0.1 (holomap default): the standalone holomap gate
++///   (holomap_gate.py, 2026-06-07) confirmed that min_dist=0.1 produces
++///   36 clusters / 27.2% noise (all hard gates green). Setting min_dist=0.0
++///   to match the Python baseline's umap-learn call degrades to 13 / 45.2%
++///   — holomap's SGD schedule and the Python umap-learn schedule differ in
++///   how they handle the zero-min-dist edge case, so the holomap default is
++///   the correct setting here (not 0.0).
++/// - spread = 1.0 (holomap default): matches umap-learn default.
++/// - n_epochs = None (holomap auto: 500 ≤ 10k pts, 200 above): matches the
++///   auto-epoch logic in umap-learn's reference implementation.
++/// - n_components, n_neighbors, seed: from the protocol params.
++///
++/// Output is a flat embedding reshaped into Vec<Vec<f32>> (n_samples × k).
++fn holomap_reduce(
++    vecs: &[Vec<f32>],
++    n_components: usize,
++    n_neighbors: usize,
++    seed: u64,
++) -> Result<Vec<Vec<f32>>, Box<dyn std::error::Error>> {
++    let n_features = vecs[0].len();
++
++    // holomap takes a flat row-major slice.
++    let flat: Vec<f32> = vecs.iter().flatten().copied().collect();
++
++    let embedding = Holomap::builder(seed)
++        .n_components(n_components)
++        .n_neighbors(n_neighbors)
++        .metric(Metric::Cosine)
++        // min_dist: 0.1 (holomap default) — NOT 0.0.
++        // See doc comment above for the full rationale.
++        // spread defaults to 1.0, n_epochs defaults to auto — no overrides needed.
++        .fit_transform(&flat, n_features)?;
++
++    // Reshape flat output (n_samples * n_components) → Vec<Vec<f32>>.
++    // chunks_exact on an n_samples*n_components slice yields exactly n_samples rows
++    Ok(embedding.chunks_exact(n_components).map(|chunk| chunk.to_vec()).collect())
++}
++
++fn error_response(msg: String) -> Response {
++    Response {
++        protocol_version: PROTOCOL_VERSION,
++        assignments: vec![],
++        probabilities: None,
++        error: Some(msg),
++    }
++}
+diff --git a/crates/holomap-clusterer/src/protocol.rs b/crates/holomap-clusterer/src/protocol.rs
+new file mode 100644
+index 0000000..043490c
+--- /dev/null
++++ b/crates/holomap-clusterer/src/protocol.rs
+@@ -0,0 +1,33 @@
++use serde::{Deserialize, Serialize};
++
++pub const PROTOCOL_VERSION: u32 = 1;
++
++#[derive(Debug, Deserialize)]
++pub struct Params {
++    /// Output dimensionality of the reduction stage. 0 = skip reduction
++    /// (cluster the input vectors directly — used for low-d inputs/tests).
++    pub n_components: usize,
++    pub n_neighbors: usize,
++    pub min_cluster_size: usize,
++    /// Seed for every stochastic component. Same input + same seed must
++    /// produce byte-identical output (the determinism contract).
++    pub seed: u64,
++}
++
++#[derive(Debug, Deserialize)]
++pub struct Request {
++    pub protocol_version: u32,
++    pub vectors: Vec<Vec<f32>>,
++    pub params: Params,
++}
++
++#[derive(Debug, Serialize)]
++pub struct Response {
++    pub protocol_version: u32,
++    /// Cluster label per input vector; -1 = noise (HDBSCAN convention).
++    pub assignments: Vec<i32>,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub probabilities: Option<Vec<f32>>,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub error: Option<String>,
++}
+diff --git a/crates/holomap-clusterer/tests/protocol.rs b/crates/holomap-clusterer/tests/protocol.rs
+new file mode 100644
+index 0000000..86ad768
+--- /dev/null
++++ b/crates/holomap-clusterer/tests/protocol.rs
+@@ -0,0 +1,135 @@
++use holomap_clusterer::protocol::{Params, Request, Response, PROTOCOL_VERSION};
++
++#[test]
++fn request_round_trips_from_json() {
++    let json = r#"{
++        "protocol_version": 1,
++        "vectors": [[0.1, 0.2], [0.3, 0.4]],
++        "params": {"n_components": 2, "n_neighbors": 15, "min_cluster_size": 5, "seed": 42}
++    }"#;
++    let req: Request = serde_json::from_str(json).expect("parse");
++    assert_eq!(req.protocol_version, PROTOCOL_VERSION);
++    assert_eq!(req.vectors.len(), 2);
++    assert_eq!(req.params.seed, 42);
++}
++
++#[test]
++fn response_serialises_with_version() {
++    let resp = Response {
++        protocol_version: PROTOCOL_VERSION,
++        assignments: vec![0, 0, -1],
++        probabilities: Some(vec![0.9, 0.8, 0.0]),
++        error: None,
++    };
++    let out = serde_json::to_string(&resp).expect("serialise");
++    assert!(out.contains("\"protocol_version\":1"));
++    assert!(out.contains("-1")); // noise label
++}
++
++#[test]
++fn error_response_omits_optional_fields() {
++    let resp = Response {
++        protocol_version: PROTOCOL_VERSION,
++        assignments: vec![],
++        probabilities: None,
++        error: Some("vector dimensions inconsistent".to_string()),
++    };
++    let out = serde_json::to_string(&resp).expect("serialise");
++    assert!(out.contains("inconsistent"));
++    assert!(!out.contains("probabilities"));
++}
++
++#[test]
++fn pipeline_rejects_inconsistent_dimensions() {
++    let req = Request {
++        protocol_version: PROTOCOL_VERSION,
++        vectors: vec![vec![0.1, 0.2], vec![0.3]],
++        params: holomap_clusterer::protocol::Params {
++            n_components: 2,
++            n_neighbors: 15,
++            min_cluster_size: 5,
++            seed: 42,
++        },
++    };
++    let resp = holomap_clusterer::pipeline::run_pipeline(&req);
++    assert!(resp.error.as_deref().unwrap_or("").contains("inconsistent"));
++}
++
++// ── Task 2 + 3 tests ─────────────────────────────────────────────────────────
++
++/// Three well-separated Gaussian-ish blobs in 8-d must yield exactly 3
++/// clusters with near-zero noise. Deterministic LCG — no rand dep.
++fn blobs() -> Vec<Vec<f32>> {
++    let mut state: u64 = 42;
++    let mut next = move || {
++        state = state
++            .wrapping_mul(6364136223846793005)
++            .wrapping_add(1442695040888963407);
++        ((state >> 33) as f32 / u32::MAX as f32) - 0.5
++    };
++    let mut vectors = Vec::new();
++    for blob in 0..3 {
++        for _ in 0..30 {
++            let mut v = vec![0.0f32; 8];
++            v[blob * 2] = 10.0;
++            for x in v.iter_mut() {
++                *x += next() * 0.5;
++            }
++            vectors.push(v);
++        }
++    }
++    vectors
++}
++
++#[test]
++fn hdbscan_separates_three_blobs() {
++    let req = Request {
++        protocol_version: 1,
++        vectors: blobs(),
++        params: Params {
++            n_components: 0, // skip reduction
++            n_neighbors: 15,
++            min_cluster_size: 5,
++            seed: 42,
++        },
++    };
++    let resp = holomap_clusterer::pipeline::run_pipeline(&req);
++    assert!(resp.error.is_none(), "pipeline errored: {:?}", resp.error);
++    let mut labels: Vec<i32> = resp.assignments.clone();
++    labels.sort_unstable();
++    labels.dedup();
++    let clusters = labels.iter().filter(|&&l| l >= 0).count();
++    assert_eq!(clusters, 3);
++    let noise = resp.assignments.iter().filter(|&&l| l == -1).count();
++    assert!(noise <= 5, "too much noise: {noise}");
++}
++
++#[test]
++fn reduced_pipeline_is_deterministic_for_fixed_seed() {
++    let mut vectors = blobs();
++    for v in vectors.iter_mut() {
++        v.resize(32, 0.0);
++    }
++    let make_req = || Request {
++        protocol_version: 1,
++        vectors: vectors.clone(),
++        params: Params {
++            n_components: 5,
++            n_neighbors: 15,
++            min_cluster_size: 5,
++            seed: 1234,
++        },
++    };
++    let a = holomap_clusterer::pipeline::run_pipeline(&make_req());
++    let b = holomap_clusterer::pipeline::run_pipeline(&make_req());
++    assert!(a.error.is_none(), "{:?}", a.error);
++    assert_eq!(a.assignments, b.assignments, "same seed must give identical labels");
++    // and the structure should still be recoverable after reduction
++    let clusters = {
++        let mut l = a.assignments.clone();
++        l.sort_unstable();
++        l.dedup();
++        l.iter().filter(|&&x| x >= 0).count()
++    };
++    assert_eq!(clusters, 3, "blob structure must survive reduction");
++}

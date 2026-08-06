@@ -1,0 +1,4491 @@
+# Review package: 9615912341bee260355001e4fcc6c4adf844449c..HEAD
+
+## Commits
+0303de8 fix: clippy failures under --workspace, cache wasm-bindgen-cli in CI
+772547b ci: cover the workspace, the wasm build and the npm suite
+36edb6d docs: record the measured backend cost, retract the +simd128 rationale
+1740c9a fix: warm the wasm module before timing, drop wrong RSS, add repetition
+7cea47d plan: untrack the wasm artifact, make CI its only producer
+0b78e95 test: backend equivalence + measured wall-clock gates
+5a6fe68 test: gate WasmClusterer's lazy load with require.cache, not just Worker success
+aea1c74 feat: WasmClusterer — the bundled default backend
+283df1a feat: npm package with the Clusterer interface and subprocess backend
+ab73cba plan: correct Task 3's interface line, guard the seed cast in Task 5
+cf52ed7 plan: drop wasm-pack — 0.15.0 is incompatible with cargo 1.95.0
+1680d4f feat: wasm binding for the clusterer, behind a `wasm` feature
+0ab179a docs: correct a misattributed reference figure — 27.2% is sklearn's, not ours
+6498b23 test: reference-corpus regression gate for the clusterer pipeline
+01ea9e5 feat: land holomap-clusterer, moved from coda
+6ce972e chore: gitignore SDD scratch and worktree dirs
+171dd32 docs: implementation plan for holomap-clusterer, and a third invariant
+8f03a8c docs: dual-backend clusterer — one interface, wasm default, subprocess opt-in
+f217ba5 docs: rewrite the clusterer spec against the crate that already exists
+33d3bc1 docs: spec holomap-cluster — deterministic reduce→cluster as a wasm npm package
+
+## Files changed
+ .github/workflows/ci.yml                           |   28 +-
+ .gitignore                                         |   13 +
+ Cargo.lock                                         |  108 ++
+ Cargo.toml                                         |    3 +
+ crates/holomap-clusterer/Cargo.toml                |   32 +
+ crates/holomap-clusterer/src/lib.rs                |    3 +
+ crates/holomap-clusterer/src/main.rs               |   31 +
+ crates/holomap-clusterer/src/pipeline.rs           |  188 +++
+ crates/holomap-clusterer/src/protocol.rs           |   33 +
+ crates/holomap-clusterer/src/wasm.rs               |   84 ++
+ .../holomap-clusterer/tests/fixture_regression.rs  |   88 ++
+ crates/holomap-clusterer/tests/protocol.rs         |  152 +++
+ .../plans/2026-08-05-holomap-clusterer.md          | 1391 ++++++++++++++++++++
+ .../2026-08-05-holomap-clusterer-wasm-design.md    |  212 +++
+ npm/bench/measure.ts                               |   99 ++
+ npm/package.json                                   |   26 +
+ npm/pnpm-lock.yaml                                 | 1050 +++++++++++++++
+ npm/pnpm-workspace.yaml                            |    2 +
+ npm/src/index.ts                                   |    3 +
+ npm/src/subprocess-clusterer.ts                    |   78 ++
+ npm/src/types.ts                                   |   35 +
+ npm/src/wasm-clusterer.ts                          |   89 ++
+ npm/test/backend-equivalence.test.ts               |   49 +
+ npm/test/subprocess-clusterer.test.ts              |   37 +
+ npm/test/ts-extension-loader.mjs                   |   25 +
+ npm/test/wasm-clusterer.test.ts                    |   52 +
+ npm/test/wasm-lazy-load.test.ts                    |   52 +
+ npm/test/worker-smoke.test.ts                      |   41 +
+ npm/tsconfig.json                                  |   14 +
+ npm/vitest.config.ts                               |    5 +
+ scripts/build-wasm.sh                              |   35 +
+ 31 files changed, 4056 insertions(+), 2 deletions(-)
+
+## Diff
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 8bbd7e3..c7428a7 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -10,38 +10,62 @@ env:
+ 
+ jobs:
+   lint:
+     runs-on: ubuntu-latest
+     steps:
+       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable as of 2026-06-07
+         with:
+           components: rustfmt, clippy
+       - run: cargo fmt --check
+-      - run: cargo clippy --all-targets --all-features -- -D warnings
++      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+ 
+   # Cross-platform: same-platform bit-identity must hold on every OS (the
+   # in-suite double-run gate checks it per platform), and the structural
+   # quality gates back the README's "cross-platform structurally identical"
+   # claim with evidence rather than assertion. fail-fast off so one platform's
+   # result never hides another's.
+   test:
+     strategy:
+       fail-fast: false
+       matrix:
+         os: [ubuntu-latest, macos-latest, windows-latest]
+     runs-on: ${{ matrix.os }}
+     steps:
+       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable as of 2026-06-07
+-      - run: cargo test --all-features
++      - run: cargo test --workspace --all-features
+ 
+   # The reason this crate exists. Runs the suite twice on the reference
+   # platform — the in-process determinism gate plus a second invocation for
+   # cross-process byte-stability.
+   determinism:
+     runs-on: ubuntu-latest
+     steps:
+       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable as of 2026-06-07
+       - run: cargo test --all-features
+       - run: cargo test --all-features
++
++  wasm:
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
++      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable as of 2026-06-07
++        with:
++          targets: wasm32-unknown-unknown
++      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
++        with:
++          # scripts/build-wasm.sh runs `cargo install wasm-bindgen-cli --locked`,
++          # which otherwise recompiles the CLI from source on every single run.
++          key: wasm-bindgen-cli
++      - name: Build wasm
++        run: bash scripts/build-wasm.sh
++      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
++        with: { version: 10 }
++      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v5.0.0
++        with: { node-version: 22 }
++      - name: Build the native binary for the subprocess backend
++        run: cargo build --release -p holomap-clusterer
++      - name: npm suite
++        working-directory: npm
++        run: pnpm install --frozen-lockfile && pnpm check-types && pnpm test
+diff --git a/.gitignore b/.gitignore
+index df611ec..407e00a 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -1,2 +1,15 @@
+ /target
+ __pycache__/
++
++# SDD scratch + worktrees (git-ignored working state, never committed)
++.superpowers/
++.worktrees/
++
++crates/holomap-clusterer/pkg/
++
++# npm package build output + deps
++npm/node_modules/
++npm/dist/
++
++# wasm build output — produced by scripts/build-wasm.sh, never committed
++npm/wasm/
+diff --git a/Cargo.lock b/Cargo.lock
+index 5224144..399dd5c 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -37,20 +37,26 @@ name = "bit-vec"
+ version = "0.8.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "5e764a1d40d510daf35e07be9eb06e75770908c27d411ee6c92109c9840eaaf7"
+ 
+ [[package]]
+ name = "bitflags"
+ version = "2.13.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "b4388bee8683e3d04af747c73422af53102d2bd24d9eadb6cbc100baef4b43f8"
+ 
++[[package]]
++name = "bumpalo"
++version = "3.20.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
++
+ [[package]]
+ name = "bytemuck"
+ version = "1.25.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "c8efb64bd706a16a1bdde310ae86b351e4d21550d98d056f22f8a7f7a2183fec"
+ 
+ [[package]]
+ name = "cfg-if"
+ version = "1.0.4"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+@@ -147,39 +153,60 @@ checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
+ dependencies = [
+  "foldhash",
+ ]
+ 
+ [[package]]
+ name = "hashbrown"
+ version = "0.17.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+ 
++[[package]]
++name = "hdbscan"
++version = "0.12.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "466aa8bfaa22c81efcf67c84e6ad046de13a05c6cc9d41a5094361bff464247a"
++dependencies = [
++ "kdtree",
++ "num-traits",
++]
++
+ [[package]]
+ name = "heck"
+ version = "0.5.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
+ 
+ [[package]]
+ name = "holomap"
+ version = "0.2.0"
+ dependencies = [
+  "nalgebra",
+  "ndarray",
+  "proptest",
+  "rand",
+  "rand_pcg",
+  "serde",
+  "serde_json",
+ ]
+ 
++[[package]]
++name = "holomap-clusterer"
++version = "0.1.0"
++dependencies = [
++ "hdbscan",
++ "holomap",
++ "serde",
++ "serde_json",
++ "wasm-bindgen",
++]
++
+ [[package]]
+ name = "id-arena"
+ version = "2.3.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
+ 
+ [[package]]
+ name = "indexmap"
+ version = "2.14.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+@@ -190,20 +217,30 @@ dependencies = [
+  "serde",
+  "serde_core",
+ ]
+ 
+ [[package]]
+ name = "itoa"
+ version = "1.0.18"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+ 
++[[package]]
++name = "kdtree"
++version = "0.7.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "0f0a0e9f770b65bac9aad00f97a67ab5c5319effed07f6da385da3c2115e47ba"
++dependencies = [
++ "num-traits",
++ "thiserror",
++]
++
+ [[package]]
+ name = "leb128fmt"
+ version = "0.1.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
+ 
+ [[package]]
+ name = "libc"
+ version = "0.2.186"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+@@ -479,20 +516,26 @@ version = "1.1.4"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190"
+ dependencies = [
+  "bitflags",
+  "errno",
+  "libc",
+  "linux-raw-sys",
+  "windows-sys",
+ ]
+ 
++[[package]]
++name = "rustversion"
++version = "1.0.23"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
++
+ [[package]]
+ name = "rusty-fork"
+ version = "0.3.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "cc6bf79ff24e648f6da1f8d1f011e9cac26491b619e6b9280f2b47f1774e6ee2"
+ dependencies = [
+  "fnv",
+  "quick-error",
+  "tempfile",
+  "wait-timeout",
+@@ -585,20 +628,40 @@ version = "3.27.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
+ dependencies = [
+  "fastrand",
+  "getrandom 0.4.2",
+  "once_cell",
+  "rustix",
+  "windows-sys",
+ ]
+ 
++[[package]]
++name = "thiserror"
++version = "1.0.69"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "b6aaf5339b578ea85b50e080feb250a3e8ae8cfcdff9a461c9ec2904bc923f52"
++dependencies = [
++ "thiserror-impl",
++]
++
++[[package]]
++name = "thiserror-impl"
++version = "1.0.69"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "syn",
++]
++
+ [[package]]
+ name = "typenum"
+ version = "1.20.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
+ 
+ [[package]]
+ name = "unarray"
+ version = "0.1.4"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+@@ -636,20 +699,65 @@ dependencies = [
+ 
+ [[package]]
+ name = "wasip3"
+ version = "0.4.0+wasi-0.3.0-rc-2026-01-06"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "5428f8bf88ea5ddc08faddef2ac4a67e390b88186c703ce6dbd955e1c145aca5"
+ dependencies = [
+  "wit-bindgen 0.51.0",
+ ]
+ 
++[[package]]
++name = "wasm-bindgen"
++version = "0.2.126"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "4b067c0c11094aef6b7a801c1e34a26affafdf3d051dba08456b868789aaf9a4"
++dependencies = [
++ "cfg-if",
++ "once_cell",
++ "rustversion",
++ "wasm-bindgen-macro",
++ "wasm-bindgen-shared",
++]
++
++[[package]]
++name = "wasm-bindgen-macro"
++version = "0.2.126"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "167ce5e579f6bcf889c4f7175a8a5a585de84e8ff93976ce393efa5f2837aab1"
++dependencies = [
++ "quote",
++ "wasm-bindgen-macro-support",
++]
++
++[[package]]
++name = "wasm-bindgen-macro-support"
++version = "0.2.126"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "f3997c7839262f4ef12cf90b818d6340c18e80f263f1a94bf157d0ec4420380e"
++dependencies = [
++ "bumpalo",
++ "proc-macro2",
++ "quote",
++ "syn",
++ "wasm-bindgen-shared",
++]
++
++[[package]]
++name = "wasm-bindgen-shared"
++version = "0.2.126"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "dc1b4cb0cc549fcf58d7dfc081778139b3d283a081644e833e84682ad71cea24"
++dependencies = [
++ "unicode-ident",
++]
++
+ [[package]]
+ name = "wasm-encoder"
+ version = "0.244.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "990065f2fe63003fe337b932cfb5e3b80e0b4d0f5ff650e6985b1048f62c8319"
+ dependencies = [
+  "leb128fmt",
+  "wasmparser",
+ ]
+ 
+diff --git a/Cargo.toml b/Cargo.toml
+index a1d9555..249efde 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -1,10 +1,13 @@
++[workspace]
++members = [".", "crates/holomap-clusterer"]
++
+ [package]
+ name = "holomap"
+ version = "0.2.0"
+ edition = "2024"
+ rust-version = "1.93"
+ license = "MIT OR Apache-2.0"
+ description = "Deterministic UMAP — the bulk, on the boundary. Same input, same params, same seed: bit-identical embeddings."
+ repository = "https://github.com/mnmal-ai/holomap"
+ keywords = ["umap", "dimension-reduction", "deterministic", "embedding", "manifold"]
+ categories = ["science", "algorithms", "mathematics"]
+diff --git a/crates/holomap-clusterer/Cargo.toml b/crates/holomap-clusterer/Cargo.toml
+new file mode 100644
+index 0000000..e17bbdb
+--- /dev/null
++++ b/crates/holomap-clusterer/Cargo.toml
+@@ -0,0 +1,32 @@
++[package]
++name = "holomap-clusterer"
++version = "0.1.0"
++edition = "2021"
++license = "MIT OR Apache-2.0"
++description = "Deterministic reduce→cluster pipeline: holomap UMAP + HDBSCAN. JSON-lines peripheral and wasm binding."
++repository = "https://github.com/mnmal-ai/holomap"
++keywords = ["clustering", "hdbscan", "umap", "deterministic", "embedding"]
++categories = ["science", "algorithms"]
++
++[dependencies]
++serde = { version = "1", features = ["derive"] }
++serde_json = "1"
++# rayon disabled deliberately: parallel MST construction would admit
++# thread-scheduling non-determinism. `serial` gives us .cluster().
++hdbscan = { version = "0.12", default-features = false, features = ["serial"] }
++holomap = { version = "0.2", path = "../.." }
++
++[[bin]]
++name = "holomap-clusterer"
++path = "src/main.rs"
++
++[features]
++default = []
++wasm = ["dep:wasm-bindgen"]
++
++[dependencies.wasm-bindgen]
++version = "0.2"
++optional = true
++
++[lib]
++crate-type = ["cdylib", "rlib"]
+diff --git a/crates/holomap-clusterer/src/lib.rs b/crates/holomap-clusterer/src/lib.rs
+new file mode 100644
+index 0000000..2c85c7a
+--- /dev/null
++++ b/crates/holomap-clusterer/src/lib.rs
+@@ -0,0 +1,3 @@
++pub mod pipeline;
++pub mod protocol;
++pub mod wasm;
+diff --git a/crates/holomap-clusterer/src/main.rs b/crates/holomap-clusterer/src/main.rs
+new file mode 100644
+index 0000000..c404548
+--- /dev/null
++++ b/crates/holomap-clusterer/src/main.rs
+@@ -0,0 +1,31 @@
++//! JSON-lines loop: one Request per stdin line, one Response per stdout
++//! line, until EOF. Errors are per-line responses, never process aborts —
++//! the TS worker treats a dead peripheral as a cycle failure, a per-line
++//! error as a data failure.
++use std::io::{self, BufRead, Write};
++
++use holomap_clusterer::pipeline::run_pipeline;
++use holomap_clusterer::protocol::{Response, PROTOCOL_VERSION};
++
++fn main() {
++    let stdin = io::stdin();
++    let mut stdout = io::stdout().lock();
++    for line in stdin.lock().lines() {
++        let line = match line {
++            Ok(l) if l.trim().is_empty() => continue,
++            Ok(l) => l,
++            Err(_) => break,
++        };
++        let response = match serde_json::from_str(&line) {
++            Ok(request) => run_pipeline(&request),
++            Err(e) => Response {
++                protocol_version: PROTOCOL_VERSION,
++                assignments: vec![],
++                probabilities: None,
++                error: Some(format!("bad request: {e}")),
++            },
++        };
++        let out = serde_json::to_string(&response).expect("response serialises");
++        writeln!(stdout, "{out}").expect("stdout write");
++    }
++}
+diff --git a/crates/holomap-clusterer/src/pipeline.rs b/crates/holomap-clusterer/src/pipeline.rs
+new file mode 100644
+index 0000000..b73cb6e
+--- /dev/null
++++ b/crates/holomap-clusterer/src/pipeline.rs
+@@ -0,0 +1,188 @@
++//! Reduce→cluster pipeline.
++//!
++//! # Crate choices
++//!
++//! ## HDBSCAN: `hdbscan` 0.12 (serial feature only)
++//!
++//! Pure-Rust implementation using Prim's MST and single-linkage condensation —
++//! zero RNG, fully deterministic given fixed input order.  The "parallel"
++//! feature (rayon) is disabled to prevent any thread-scheduling non-determinism
++//! from creeping in via parallel MST construction.  Returns `Vec<i32>` with -1
++//! for noise; no membership-probability API is exposed by this crate.
++//!
++//! ## Reduction: `holomap` — seedable deterministic UMAP (git → crates.io on publish)
++//!
++//! Replaces the PCA (nalgebra SVD) stage that was the only viable Rust
++//! reduction in Phase-0: PCA is a linear transform and cannot preserve the
++//! local neighbourhood density of 1024-d cosine-normalised text embeddings —
++//! see coda's `docs/2026-06-06-phase0-clusterer-spike-findings.md` for the root-cause
++//! analysis and the FALLBACK-Python verdict.
++//!
++//! holomap (rev 71810a1) is the project's own seedable UMAP-class Rust crate.
++//! The standalone gate (2026-06-07) produced 36 clusters / 27.2% noise / 7-8
++//! coherent qualitative samples / byte-identical determinism / 2.46 s — all
++//! hard gates green.  That result reopens the GO-Rust path.
++//!
++//! ## Pipeline metric
++//!
++//! Corpus embeddings are bge-m3 / 1024-d, L2-normalised.  The pipeline
++//! preserves the normalisation (see `l2_normalise`) and then passes
++//! `Metric::Cosine` to holomap so the kNN stage uses cosine distance — the
++//! natural choice for magnitude-normalised text embeddings and matching the
++//! Python UMAP baseline (`metric='cosine'`).  On the unit sphere cosine
++//! distance is equivalent to squared Euclidean, but the cosine path gives
++//! numerically cleaner distances because the dot-product accumulates in f64.
++//!
++//! ## umap-learn parameter correspondence
++//!
++//! The Python baseline uses:
++//!   `UMAP(n_components=10, n_neighbors=15, min_dist=0.0, metric='cosine')`
++//! holomap defaults: n_components=2, n_neighbors=15, min_dist=0.1, metric=Euclidean.
++//! We override n_components, n_neighbors, metric, and seed from the protocol params.
++//! min_dist is left at holomap's default (0.1) — NOT 0.0 — because the
++//! standalone gate confirmed 0.1 passes the hard gates (36/27.2%) while 0.0
++//! regresses (13/45.2%).  holomap's SGD schedule handles the zero-min-dist
++//! edge case differently from umap-learn's.  spread (1.0) and n_epochs (auto)
++//! match umap-learn's defaults and are left at holomap's defaults.
++//!
++//! ## Determinism contract
++//!
++//! `hdbscan` serial: deterministic by algorithm (graph-based MST, no RNG).
++//! `holomap`: seeded PCG RNG, seed supplied from the protocol `seed` field.
++//! Thread pool: neither crate uses rayon in the paths we call.
++//! Result: same input + same seed → byte-identical assignments, always.
++
++use crate::protocol::{Request, Response, PROTOCOL_VERSION};
++use hdbscan::{DistanceMetric, Hdbscan, HdbscanHyperParams};
++use holomap::{Holomap, Metric};
++
++pub fn run_pipeline(req: &Request) -> Response {
++    if req.protocol_version != PROTOCOL_VERSION {
++        return error_response(format!(
++            "unsupported protocol_version {}",
++            req.protocol_version
++        ));
++    }
++    if req.vectors.is_empty() {
++        return error_response("empty input".to_string());
++    }
++    let dims: Vec<usize> = req.vectors.iter().map(|v| v.len()).collect();
++    if dims.windows(2).any(|w| w[0] != w[1]) {
++        return error_response("vector dimensions inconsistent".to_string());
++    }
++    let dim = dims[0];
++    if dim == 0 {
++        return error_response("zero-dimensional vectors".to_string());
++    }
++
++    // Step 1 — L2-normalise (cosine ~ euclidean on unit sphere; holomap's
++    // Metric::Cosine handles the general case, but normalisation here matches
++    // the Python baseline and is numerically cheap).
++    let normed = l2_normalise(&req.vectors);
++
++    // Step 2 — optional holomap UMAP reduction.
++    let to_cluster: Vec<Vec<f32>> = if req.params.n_components == 0 {
++        // No reduction: cluster the normalised vectors directly.
++        normed
++    } else {
++        match holomap_reduce(&normed, req.params.n_components, req.params.n_neighbors, req.params.seed) {
++            Ok(v) => v,
++            Err(e) => return error_response(format!("holomap reduction failed: {e}")),
++        }
++    };
++
++    // Step 3 — HDBSCAN (serial, no rayon, fully deterministic).
++    // min_samples is intentionally NOT set — the `hdbscan` crate defaults it to
++    // min_cluster_size, which matches sklearn's `HDBSCAN(min_cluster_size=5)`
++    // default (min_samples=None → min_cluster_size).  Setting it to n_neighbors
++    // (15) degrades cluster count drastically (8 vs 36 on the reference corpus).
++    // NOTE this also applies to the n_components=0 direct-HDBSCAN path (used by
++    // dynamics split detection): the previous min_samples=n_neighbors wiring was
++    // the cross-binding INCONSISTENCY — clusterer.py never set min_samples, so
++    // sklearn already defaulted it to min_cluster_size there.  Leaving it unset
++    // here makes both bindings agree; the change is deliberate.
++    let hp = HdbscanHyperParams::builder()
++        .min_cluster_size(req.params.min_cluster_size)
++        .dist_metric(DistanceMetric::Euclidean)
++        .build();
++
++    let clusterer = Hdbscan::new(&to_cluster, hp);
++    match clusterer.cluster() {
++        Ok(labels) => Response {
++            protocol_version: PROTOCOL_VERSION,
++            assignments: labels,
++            // The `hdbscan` crate (0.12) does not expose membership
++            // probabilities — only the label vec is returned by .cluster().
++            probabilities: None,
++            error: None,
++        },
++        Err(e) => error_response(format!("HDBSCAN failed: {e:?}")),
++    }
++}
++
++/// L2-normalise every vector. Zero vectors are left as-is (all-zeros — they
++/// will be noise outliers in HDBSCAN, which is appropriate).
++fn l2_normalise(vecs: &[Vec<f32>]) -> Vec<Vec<f32>> {
++    vecs.iter()
++        .map(|v| {
++            let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
++            if norm == 0.0 {
++                v.clone()
++            } else {
++                v.iter().map(|x| x / norm).collect()
++            }
++        })
++        .collect()
++}
++
++/// Reduce via holomap (seedable UMAP-class).
++///
++/// Parameter choices:
++/// - metric = Cosine: corpus embeddings are bge-m3 / L2-normalised; cosine is
++///   the natural distance for text embeddings and matches the Python baseline.
++/// - min_dist = 0.1 (holomap default): the standalone holomap gate
++///   (holomap_gate.py, 2026-06-07) confirmed that min_dist=0.1 produces
++///   36 clusters / 27.2% noise (all hard gates green). Setting min_dist=0.0
++///   to match the Python baseline's umap-learn call degrades to 13 / 45.2%
++///   — holomap's SGD schedule and the Python umap-learn schedule differ in
++///   how they handle the zero-min-dist edge case, so the holomap default is
++///   the correct setting here (not 0.0).
++/// - spread = 1.0 (holomap default): matches umap-learn default.
++/// - n_epochs = None (holomap auto: 500 ≤ 10k pts, 200 above): matches the
++///   auto-epoch logic in umap-learn's reference implementation.
++/// - n_components, n_neighbors, seed: from the protocol params.
++///
++/// Output is a flat embedding reshaped into Vec<Vec<f32>> (n_samples × k).
++fn holomap_reduce(
++    vecs: &[Vec<f32>],
++    n_components: usize,
++    n_neighbors: usize,
++    seed: u64,
++) -> Result<Vec<Vec<f32>>, Box<dyn std::error::Error>> {
++    let n_features = vecs[0].len();
++
++    // holomap takes a flat row-major slice.
++    let flat: Vec<f32> = vecs.iter().flatten().copied().collect();
++
++    let embedding = Holomap::builder(seed)
++        .n_components(n_components)
++        .n_neighbors(n_neighbors)
++        .metric(Metric::Cosine)
++        // min_dist: 0.1 (holomap default) — NOT 0.0.
++        // See doc comment above for the full rationale.
++        // spread defaults to 1.0, n_epochs defaults to auto — no overrides needed.
++        .fit_transform(&flat, n_features)?;
++
++    // Reshape flat output (n_samples * n_components) → Vec<Vec<f32>>.
++    // chunks_exact on an n_samples*n_components slice yields exactly n_samples rows
++    Ok(embedding.chunks_exact(n_components).map(|chunk| chunk.to_vec()).collect())
++}
++
++fn error_response(msg: String) -> Response {
++    Response {
++        protocol_version: PROTOCOL_VERSION,
++        assignments: vec![],
++        probabilities: None,
++        error: Some(msg),
++    }
++}
+diff --git a/crates/holomap-clusterer/src/protocol.rs b/crates/holomap-clusterer/src/protocol.rs
+new file mode 100644
+index 0000000..043490c
+--- /dev/null
++++ b/crates/holomap-clusterer/src/protocol.rs
+@@ -0,0 +1,33 @@
++use serde::{Deserialize, Serialize};
++
++pub const PROTOCOL_VERSION: u32 = 1;
++
++#[derive(Debug, Deserialize)]
++pub struct Params {
++    /// Output dimensionality of the reduction stage. 0 = skip reduction
++    /// (cluster the input vectors directly — used for low-d inputs/tests).
++    pub n_components: usize,
++    pub n_neighbors: usize,
++    pub min_cluster_size: usize,
++    /// Seed for every stochastic component. Same input + same seed must
++    /// produce byte-identical output (the determinism contract).
++    pub seed: u64,
++}
++
++#[derive(Debug, Deserialize)]
++pub struct Request {
++    pub protocol_version: u32,
++    pub vectors: Vec<Vec<f32>>,
++    pub params: Params,
++}
++
++#[derive(Debug, Serialize)]
++pub struct Response {
++    pub protocol_version: u32,
++    /// Cluster label per input vector; -1 = noise (HDBSCAN convention).
++    pub assignments: Vec<i32>,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub probabilities: Option<Vec<f32>>,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub error: Option<String>,
++}
+diff --git a/crates/holomap-clusterer/src/wasm.rs b/crates/holomap-clusterer/src/wasm.rs
+new file mode 100644
+index 0000000..912f16f
+--- /dev/null
++++ b/crates/holomap-clusterer/src/wasm.rs
+@@ -0,0 +1,84 @@
++//! WebAssembly binding.
++//!
++//! Wraps `run_pipeline` unchanged. The only logic here is marshalling: a
++//! flat row-major Float32Array in, an Int32Array of labels out.
++//!
++//! `run_pipeline` is deliberately NOT refactored to take a flat slice. One
++//! Vec allocation per row is 723 on the reference corpus and 50k at the
++//! ceiling — nothing beside an O(N²·d) kNN — and changing tested production
++//! code for a micro-optimisation is the wrong trade.
++
++/// holomap's honest envelope, set by its exact O(N²·d) kNN.
++///
++/// A constant rather than a parameter: a configurable ceiling lets a caller
++/// opt into an unbounded run with no way to know what they asked for. The
++/// guard is wasm-only — a blocked worker thread is a wasm-specific hazard,
++/// and the subprocess path is unaffected.
++pub const MAX_ROWS: usize = 50_000;
++
++/// Reshape a flat row-major buffer into rows. Panics on a ragged length;
++/// the caller checks divisibility first and returns a JS error.
++pub fn reshape(flat: &[f32], n_features: usize) -> Vec<Vec<f32>> {
++    assert!(n_features > 0, "n_features must be positive");
++    assert!(
++        flat.len().is_multiple_of(n_features),
++        "buffer length {} is not divisible by n_features {}",
++        flat.len(),
++        n_features
++    );
++    flat.chunks_exact(n_features).map(<[f32]>::to_vec).collect()
++}
++
++#[cfg(feature = "wasm")]
++mod bindings {
++    use super::{reshape, MAX_ROWS};
++    use crate::pipeline::run_pipeline;
++    use crate::protocol::{Params, Request, PROTOCOL_VERSION};
++    use wasm_bindgen::prelude::*;
++
++    #[wasm_bindgen]
++    pub fn reduce_and_cluster(
++        vectors: &[f32],
++        n_features: usize,
++        n_components: usize,
++        n_neighbors: usize,
++        min_cluster_size: usize,
++        seed: f64,
++    ) -> Result<Vec<i32>, JsError> {
++        if n_features == 0 {
++            return Err(JsError::new("n_features must be positive"));
++        }
++        if !vectors.len().is_multiple_of(n_features) {
++            return Err(JsError::new(&format!(
++                "buffer length {} is not divisible by n_features {n_features}",
++                vectors.len()
++            )));
++        }
++        let n_rows = vectors.len() / n_features;
++        if n_rows > MAX_ROWS {
++            return Err(JsError::new(&format!(
++                "{n_rows} rows exceeds MAX_ROWS {MAX_ROWS} — holomap's exact kNN is O(N^2*d); \
++                 use the subprocess backend for corpora this size"
++            )));
++        }
++
++        let resp = run_pipeline(&Request {
++            protocol_version: PROTOCOL_VERSION,
++            vectors: reshape(vectors, n_features),
++            params: Params {
++                n_components,
++                n_neighbors,
++                min_cluster_size,
++                seed: seed as u64,
++            },
++        });
++
++        // The Rust side reports errors in-band for the sidecar's per-line
++        // contract. JS gets a throw instead: a resolved object carrying an
++        // error field invites callers to ignore it.
++        match resp.error {
++            Some(e) => Err(JsError::new(&e)),
++            None => Ok(resp.assignments),
++        }
++    }
++}
+diff --git a/crates/holomap-clusterer/tests/fixture_regression.rs b/crates/holomap-clusterer/tests/fixture_regression.rs
+new file mode 100644
+index 0000000..531730b
+--- /dev/null
++++ b/crates/holomap-clusterer/tests/fixture_regression.rs
+@@ -0,0 +1,88 @@
++//! Reference-corpus regression gate.
++//!
++//! The unit suite proves the code is wired correctly. This proves the
++//! PIPELINE still behaves: 36 clusters / 27.2% noise on the real 723-row
++//! corpus, the result the standalone holomap gate established 2026-06-07.
++//!
++//! Env-gated because the fixture is 9.4 MB and lives outside this repo.
++//! Unset HOLOMAP_CLUSTERER_FIXTURE and this skips, exactly like hydra's
++//! POSTGRES_URL-gated suites.
++//!
++//!   HOLOMAP_CLUSTERER_FIXTURE=/mnt/data/Develop/coda-fixtures/2026-06-05-claude-corpus-799.tsv \
++//!     cargo test -p holomap-clusterer --test fixture_regression -- --nocapture
++//!
++//! Fixture format: 6 tab-separated columns; col 5 is the text (used to
++//! exclude synthetic rows), col 6 is a JSON array of 1024 floats.
++
++use holomap_clusterer::pipeline::run_pipeline;
++use holomap_clusterer::protocol::{Params, Request, PROTOCOL_VERSION};
++
++/// Load the corpus, excluding the 76 synthetic perf fixtures. Coda's MVD §5
++/// found those near-duplicates form the densest regions in the whole corpus
++/// and dominate naive clustering — they must go before the clusterer sees
++/// the data, not after.
++fn load_fixture(path: &str) -> Vec<Vec<f32>> {
++    let raw = std::fs::read_to_string(path).expect("fixture readable");
++    raw.lines()
++        .filter_map(|line| {
++            let cols: Vec<&str> = line.split('\t').collect();
++            if cols.len() < 6 {
++                return None;
++            }
++            if cols[4].starts_with("Seed session ") || cols[4].starts_with("perf-seed-memory-") {
++                return None;
++            }
++            let vec: Vec<f32> = cols[5]
++                .trim_matches(['[', ']'].as_ref())
++                .split(',')
++                .map(|x| x.trim().parse::<f32>().expect("float"))
++                .collect();
++            Some(vec)
++        })
++        .collect()
++}
++
++#[test]
++fn reference_corpus_reproduces_the_established_result() {
++    let Ok(path) = std::env::var("HOLOMAP_CLUSTERER_FIXTURE") else {
++        eprintln!("skipping: HOLOMAP_CLUSTERER_FIXTURE unset");
++        return;
++    };
++
++    let vectors = load_fixture(&path);
++    assert_eq!(vectors.len(), 723, "expected 799 rows minus 76 synthetic");
++    assert_eq!(vectors[0].len(), 1024, "bge-m3 dimensionality");
++
++    let resp = run_pipeline(&Request {
++        protocol_version: PROTOCOL_VERSION,
++        vectors,
++        params: Params {
++            n_components: 10,
++            n_neighbors: 15,
++            min_cluster_size: 5,
++            seed: 42,
++        },
++    });
++    assert!(resp.error.is_none(), "pipeline errored: {:?}", resp.error);
++
++    let mut labels = resp.assignments.clone();
++    labels.sort_unstable();
++    labels.dedup();
++    let clusters = labels.iter().filter(|&&l| l >= 0).count();
++    let noise = resp.assignments.iter().filter(|&&l| l == -1).count();
++    let noise_pct = 100.0 * noise as f64 / resp.assignments.len() as f64;
++
++    eprintln!("clusters={clusters} noise={noise_pct:.1}%");
++
++    // The MVD's established envelope. Deliberately a band, not an equality:
++    // a dependency patch may shift the exact count without breaking the
++    // pipeline, but leaving this band means something real changed.
++    assert!(
++        (30..=60).contains(&clusters),
++        "cluster count {clusters} outside the 30-60 gate"
++    );
++    assert!(
++        (10.0..=35.0).contains(&noise_pct),
++        "noise {noise_pct:.1}% outside the 10-35% gate"
++    );
++}
+diff --git a/crates/holomap-clusterer/tests/protocol.rs b/crates/holomap-clusterer/tests/protocol.rs
+new file mode 100644
+index 0000000..8dcf776
+--- /dev/null
++++ b/crates/holomap-clusterer/tests/protocol.rs
+@@ -0,0 +1,152 @@
++use holomap_clusterer::protocol::{Params, Request, Response, PROTOCOL_VERSION};
++
++#[test]
++fn request_round_trips_from_json() {
++    let json = r#"{
++        "protocol_version": 1,
++        "vectors": [[0.1, 0.2], [0.3, 0.4]],
++        "params": {"n_components": 2, "n_neighbors": 15, "min_cluster_size": 5, "seed": 42}
++    }"#;
++    let req: Request = serde_json::from_str(json).expect("parse");
++    assert_eq!(req.protocol_version, PROTOCOL_VERSION);
++    assert_eq!(req.vectors.len(), 2);
++    assert_eq!(req.params.seed, 42);
++}
++
++#[test]
++fn response_serialises_with_version() {
++    let resp = Response {
++        protocol_version: PROTOCOL_VERSION,
++        assignments: vec![0, 0, -1],
++        probabilities: Some(vec![0.9, 0.8, 0.0]),
++        error: None,
++    };
++    let out = serde_json::to_string(&resp).expect("serialise");
++    assert!(out.contains("\"protocol_version\":1"));
++    assert!(out.contains("-1")); // noise label
++}
++
++#[test]
++fn error_response_omits_optional_fields() {
++    let resp = Response {
++        protocol_version: PROTOCOL_VERSION,
++        assignments: vec![],
++        probabilities: None,
++        error: Some("vector dimensions inconsistent".to_string()),
++    };
++    let out = serde_json::to_string(&resp).expect("serialise");
++    assert!(out.contains("inconsistent"));
++    assert!(!out.contains("probabilities"));
++}
++
++#[test]
++fn pipeline_rejects_inconsistent_dimensions() {
++    let req = Request {
++        protocol_version: PROTOCOL_VERSION,
++        vectors: vec![vec![0.1, 0.2], vec![0.3]],
++        params: holomap_clusterer::protocol::Params {
++            n_components: 2,
++            n_neighbors: 15,
++            min_cluster_size: 5,
++            seed: 42,
++        },
++    };
++    let resp = holomap_clusterer::pipeline::run_pipeline(&req);
++    assert!(resp.error.as_deref().unwrap_or("").contains("inconsistent"));
++}
++
++// ── Task 2 + 3 tests ─────────────────────────────────────────────────────────
++
++/// Three well-separated Gaussian-ish blobs in 8-d must yield exactly 3
++/// clusters with near-zero noise. Deterministic LCG — no rand dep.
++fn blobs() -> Vec<Vec<f32>> {
++    let mut state: u64 = 42;
++    let mut next = move || {
++        state = state
++            .wrapping_mul(6364136223846793005)
++            .wrapping_add(1442695040888963407);
++        ((state >> 33) as f32 / u32::MAX as f32) - 0.5
++    };
++    let mut vectors = Vec::new();
++    for blob in 0..3 {
++        for _ in 0..30 {
++            let mut v = vec![0.0f32; 8];
++            v[blob * 2] = 10.0;
++            for x in v.iter_mut() {
++                *x += next() * 0.5;
++            }
++            vectors.push(v);
++        }
++    }
++    vectors
++}
++
++#[test]
++fn hdbscan_separates_three_blobs() {
++    let req = Request {
++        protocol_version: 1,
++        vectors: blobs(),
++        params: Params {
++            n_components: 0, // skip reduction
++            n_neighbors: 15,
++            min_cluster_size: 5,
++            seed: 42,
++        },
++    };
++    let resp = holomap_clusterer::pipeline::run_pipeline(&req);
++    assert!(resp.error.is_none(), "pipeline errored: {:?}", resp.error);
++    let mut labels: Vec<i32> = resp.assignments.clone();
++    labels.sort_unstable();
++    labels.dedup();
++    let clusters = labels.iter().filter(|&&l| l >= 0).count();
++    assert_eq!(clusters, 3);
++    let noise = resp.assignments.iter().filter(|&&l| l == -1).count();
++    assert!(noise <= 5, "too much noise: {noise}");
++}
++
++#[test]
++fn reduced_pipeline_is_deterministic_for_fixed_seed() {
++    let mut vectors = blobs();
++    for v in vectors.iter_mut() {
++        v.resize(32, 0.0);
++    }
++    let make_req = || Request {
++        protocol_version: 1,
++        vectors: vectors.clone(),
++        params: Params {
++            n_components: 5,
++            n_neighbors: 15,
++            min_cluster_size: 5,
++            seed: 1234,
++        },
++    };
++    let a = holomap_clusterer::pipeline::run_pipeline(&make_req());
++    let b = holomap_clusterer::pipeline::run_pipeline(&make_req());
++    assert!(a.error.is_none(), "{:?}", a.error);
++    assert_eq!(a.assignments, b.assignments, "same seed must give identical labels");
++    // and the structure should still be recoverable after reduction
++    let clusters = {
++        let mut l = a.assignments.clone();
++        l.sort_unstable();
++        l.dedup();
++        l.iter().filter(|&&x| x >= 0).count()
++    };
++    assert_eq!(clusters, 3, "blob structure must survive reduction");
++}
++
++/// The wasm binding flattens a row-major input into the Vec<Vec<f32>> that
++/// run_pipeline takes. That reshape is the only logic the binding adds, so
++/// it is the only part worth testing on the native side — the wasm-specific
++/// behaviour is covered by the JS suite.
++#[test]
++fn flatten_reshapes_row_major_input() {
++    let flat = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
++    let rows = holomap_clusterer::wasm::reshape(&flat, 3);
++    assert_eq!(rows, vec![vec![1.0, 2.0, 3.0], vec![4.0, 5.0, 6.0]]);
++}
++
++#[test]
++fn flatten_rejects_ragged_input() {
++    let flat = vec![1.0f32, 2.0, 3.0, 4.0, 5.0];
++    assert!(std::panic::catch_unwind(|| holomap_clusterer::wasm::reshape(&flat, 3)).is_err());
++}
+diff --git a/docs/superpowers/plans/2026-08-05-holomap-clusterer.md b/docs/superpowers/plans/2026-08-05-holomap-clusterer.md
+new file mode 100644
+index 0000000..886f400
+--- /dev/null
++++ b/docs/superpowers/plans/2026-08-05-holomap-clusterer.md
+@@ -0,0 +1,1391 @@
++# holomap-clusterer Implementation Plan
++
++> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
++
++**Goal:** Move the existing reduce→cluster crate into the holomap repo, add a wasm binding, and publish an npm package exposing one `Clusterer` interface with two backends.
++
++**Architecture:** `crates/holomap-clusterer` is the Rust core — unchanged `run_pipeline`, plus a `wasm` feature exposing it to JS. `npm/` wraps it as `@mnmal-ai/holomap-clusterer`, shipping the `Clusterer` interface with `WasmClusterer` (bundled wasm, default) and `SubprocessClusterer` (spawns a native binary). Coda migrates to the package and deletes its local copies.
++
++**Tech Stack:** Rust 1.93 (edition 2024 for holomap, 2021 for the clusterer), `holomap` 0.2, `hdbscan` 0.12 (`serial` only), `wasm-bindgen` + `wasm-bindgen-cli`, TypeScript, Vitest, Biome. **Not `wasm-pack`** — 0.15.0 is incompatible with cargo 1.95.0 (see Task 5).
++
++**Spec:** [`docs/superpowers/specs/2026-08-05-holomap-clusterer-wasm-design.md`](../specs/2026-08-05-holomap-clusterer-wasm-design.md)
++
++## Global Constraints
++
++- **Behaviour-preserving move.** `run_pipeline` logic does not change. Any diff to `pipeline.rs` beyond the crate rename in `use` paths is a defect.
++- **`min_samples` stays unset.** `hdbscan` then defaults it to `min_cluster_size`, matching sklearn. Setting it to `n_neighbors` collapsed the reference corpus from 36 clusters to 8.
++- **`min_dist` stays at holomap's default 0.1 — NOT 0.0.** Setting 0.0 to match the umap-learn baseline regresses the corpus to **13 clusters / 45.2% noise** (sklearn-clustered figures — see Task 2 for the all-Rust baseline). holomap's SGD schedule handles the zero-min-dist edge case differently from umap-learn's.
++- **`hdbscan` keeps `default-features = false, features = ["serial"]`.** Enabling rayon admits thread-scheduling non-determinism.
++- **`probabilities` is always `None`.** `hdbscan` 0.12's `.cluster()` returns labels only. Do not invent a value for it.
++- **Errors stay in-band in Rust** (`Response.error`), and **throw in JS** (`ClustererError`).
++- **License: `MIT OR Apache-2.0`** on the crate and the npm package.
++- **Determinism is the product.** Same input + same params + same seed → byte-identical `assignments`.
++- **TDD, DRY, YAGNI, frequent commits.** Green-gate before each commit.
++- **Commit footer**, every commit: `Written by [mnmal-ai-claude](https://github.com/mnmal-ai-claude) with [Claude Code](https://claude.com/claude-code)`
++- **Branch:** `feat/holomap-clusterer`.
++- **Never commit to main.** Feature branch → PR.
++
++## File Structure
++
++```
++holomap/
++  Cargo.toml                          # MODIFY: add [workspace]
++  crates/holomap-clusterer/
++    Cargo.toml                        # CREATE
++    src/lib.rs                        # CREATE (from coda)
++    src/protocol.rs                   # CREATE (from coda, verbatim)
++    src/pipeline.rs                   # CREATE (from coda, verbatim but for `use` paths)
++    src/main.rs                       # CREATE (from coda, crate rename only)
++    src/wasm.rs                       # CREATE (new)
++    tests/protocol.rs                 # CREATE (from coda, crate rename only)
++    tests/fixture_regression.rs       # CREATE (new, env-gated)
++  npm/
++    package.json                      # CREATE
++    tsconfig.json                     # CREATE
++    vitest.config.ts                  # CREATE
++    src/types.ts                      # CREATE: Clusterer, ClusterParams, ClusterResult, ClustererError
++    src/subprocess-clusterer.ts       # CREATE (from coda, verbatim)
++    src/wasm-clusterer.ts             # CREATE (new)
++    src/index.ts                      # CREATE: re-exports
++    test/subprocess-clusterer.test.ts # CREATE
++    test/wasm-clusterer.test.ts       # CREATE
++    test/worker-smoke.test.ts         # CREATE
++    test/backend-equivalence.test.ts  # CREATE
++  .github/workflows/ci.yml            # MODIFY: wasm build + npm jobs
++```
++
++Coda changes land in Task 9.
++
++---
++
++### Task 1: Land the crate in a holomap workspace
++
++Move, rename and relicense the crate with zero behaviour change. The existing 6-test suite is the proof.
++
++**Files:**
++- Modify: `Cargo.toml` (root)
++- Create: `crates/holomap-clusterer/Cargo.toml`
++- Create: `crates/holomap-clusterer/src/{lib,protocol,pipeline,main}.rs`
++- Test: `crates/holomap-clusterer/tests/protocol.rs`
++
++**Interfaces:**
++- Produces: `holomap_clusterer::protocol::{Params, Request, Response, PROTOCOL_VERSION}` and `holomap_clusterer::pipeline::run_pipeline(&Request) -> Response`. Signatures identical to `coda_clusterer`'s.
++
++- [ ] **Step 1: Create the branch**
++
++```bash
++cd /mnt/data/Develop/holomap
++git checkout main && git pull
++git checkout -b feat/holomap-clusterer
++```
++
++- [ ] **Step 2: Convert the root manifest to a workspace**
++
++Add to the **top** of `Cargo.toml`, above `[package]`:
++
++```toml
++[workspace]
++members = [".", "crates/holomap-clusterer"]
++```
++
++- [ ] **Step 3: Copy the crate source across, preserving history**
++
++```bash
++cd /mnt/data/Develop/coda
++git log --oneline -- crates/coda-clusterer | tail -1   # note the origin commit for the message
++mkdir -p /mnt/data/Develop/holomap/crates/holomap-clusterer
++cp -r crates/coda-clusterer/src crates/coda-clusterer/tests \
++      /mnt/data/Develop/holomap/crates/holomap-clusterer/
++```
++
++History preservation via `git format-patch`/`git am` is preferred where it works cleanly across the two unrelated histories. If it does not, this copy is acceptable — name the origin commit in the Step 8 commit message.
++
++- [ ] **Step 4: Write the crate manifest**
++
++`crates/holomap-clusterer/Cargo.toml`:
++
++```toml
++[package]
++name = "holomap-clusterer"
++version = "0.1.0"
++edition = "2021"
++license = "MIT OR Apache-2.0"
++description = "Deterministic reduce→cluster pipeline: holomap UMAP + HDBSCAN. JSON-lines peripheral and wasm binding."
++repository = "https://github.com/mnmal-ai/holomap"
++keywords = ["clustering", "hdbscan", "umap", "deterministic", "embedding"]
++categories = ["science", "algorithms"]
++
++[dependencies]
++serde = { version = "1", features = ["derive"] }
++serde_json = "1"
++# rayon disabled deliberately: parallel MST construction would admit
++# thread-scheduling non-determinism. `serial` gives us .cluster().
++hdbscan = { version = "0.12", default-features = false, features = ["serial"] }
++holomap = { version = "0.2", path = "../.." }
++
++[[bin]]
++name = "holomap-clusterer"
++path = "src/main.rs"
++```
++
++- [ ] **Step 5: Rename crate references in source**
++
++Three files reference the old crate name. Replace `coda_clusterer` with `holomap_clusterer` in:
++- `src/main.rs` — the two `use coda_clusterer::…` lines
++- `tests/protocol.rs` — the `use` line and three fully-qualified `coda_clusterer::pipeline::run_pipeline` / `coda_clusterer::protocol::Params` references
++
++```bash
++cd /mnt/data/Develop/holomap/crates/holomap-clusterer
++grep -rl 'coda_clusterer' src tests | xargs sed -i 's/coda_clusterer/holomap_clusterer/g'
++grep -rn 'coda_clusterer' src tests   # must print nothing
++```
++
++Also update the one doc-comment reference in `src/pipeline.rs` that names `docs/2026-06-06-phase0-clusterer-spike-findings.md` — that file lives in the coda repo, so qualify it as `coda's docs/2026-06-06-phase0-clusterer-spike-findings.md`. **Do not touch any other line of `pipeline.rs`.**
++
++- [ ] **Step 6: Run the moved suite to verify it passes unchanged**
++
++Run: `cargo test -p holomap-clusterer`
++Expected: **6 passed**, exit 0. Same count as `coda-clusterer`. A different count means the move was not behaviour-preserving.
++
++- [ ] **Step 7: Verify the holomap crate is unaffected**
++
++Run: `cargo test -p holomap`
++Expected: 50 passed, exit 0. The workspace conversion must not disturb it.
++
++- [ ] **Step 8: Commit**
++
++```bash
++git add Cargo.toml crates/holomap-clusterer
++git commit -m "feat: land holomap-clusterer, moved from coda
++
++Behaviour-preserving move of coda/crates/coda-clusterer at <origin-sha>.
++Renamed, relicensed Apache-2.0 -> MIT OR Apache-2.0 to match holomap and
++its deps, and the root manifest becomes a workspace.
++
++Only crate-name references changed. pipeline.rs logic is untouched: the
++6-test suite passes unchanged, which is the proof.
++
++Written by [mnmal-ai-claude](https://github.com/mnmal-ai-claude) with [Claude Code](https://claude.com/claude-code)"
++```
++
++---
++
++### Task 2: Reference-corpus regression gate
++
++The 6 unit tests prove the code moved. They do not prove the *pipeline* still produces the right answer on real data. This adds that gate, env-gated so the 9.4 MB fixture never enters the repo.
++
++**Files:**
++- Create: `crates/holomap-clusterer/tests/fixture_regression.rs`
++
++**Interfaces:**
++- Consumes: `holomap_clusterer::pipeline::run_pipeline`, `holomap_clusterer::protocol::{Params, Request, PROTOCOL_VERSION}`
++
++- [ ] **Step 1: Write the failing test**
++
++`crates/holomap-clusterer/tests/fixture_regression.rs`:
++
++```rust
++//! Reference-corpus regression gate.
++//!
++//! The unit suite proves the code is wired correctly. This proves the
++//! PIPELINE still behaves on the real 723-row corpus. Baseline for THIS
++//! all-Rust pipeline: 36 clusters / 30.0% noise (measured 2026-08-05).
++//!
++//! The widely-quoted 36 / 27.2% is a DIFFERENT binding — holomap_gate.py
++//! reduces with holomap then clusters with sklearn's HDBSCAN. Same
++//! reduction, different clusterer, so the cluster count matches exactly
++//! and the noise fraction differs by ~3 points. Do not treat 27.2% as
++//! this pipeline's number.
++//!
++//! Env-gated because the fixture is 9.4 MB and lives outside this repo.
++//! Unset HOLOMAP_CLUSTERER_FIXTURE and this skips, exactly like hydra's
++//! POSTGRES_URL-gated suites.
++//!
++//!   HOLOMAP_CLUSTERER_FIXTURE=/mnt/data/Develop/coda-fixtures/2026-06-05-claude-corpus-799.tsv \
++//!     cargo test -p holomap-clusterer --test fixture_regression -- --nocapture
++//!
++//! Fixture format: 6 tab-separated columns; col 5 is the text (used to
++//! exclude synthetic rows), col 6 is a JSON array of 1024 floats.
++
++use holomap_clusterer::pipeline::run_pipeline;
++use holomap_clusterer::protocol::{Params, Request, PROTOCOL_VERSION};
++
++/// Load the corpus, excluding the 76 synthetic perf fixtures. Coda's MVD §5
++/// found those near-duplicates form the densest regions in the whole corpus
++/// and dominate naive clustering — they must go before the clusterer sees
++/// the data, not after.
++fn load_fixture(path: &str) -> Vec<Vec<f32>> {
++    let raw = std::fs::read_to_string(path).expect("fixture readable");
++    raw.lines()
++        .filter_map(|line| {
++            let cols: Vec<&str> = line.split('\t').collect();
++            if cols.len() < 6 {
++                return None;
++            }
++            if cols[4].starts_with("Seed session ") || cols[4].starts_with("perf-seed-memory-") {
++                return None;
++            }
++            let vec: Vec<f32> = cols[5]
++                .trim_matches(['[', ']'].as_ref())
++                .split(',')
++                .map(|x| x.trim().parse::<f32>().expect("float"))
++                .collect();
++            Some(vec)
++        })
++        .collect()
++}
++
++#[test]
++fn reference_corpus_reproduces_the_established_result() {
++    let Ok(path) = std::env::var("HOLOMAP_CLUSTERER_FIXTURE") else {
++        eprintln!("skipping: HOLOMAP_CLUSTERER_FIXTURE unset");
++        return;
++    };
++
++    let vectors = load_fixture(&path);
++    assert_eq!(vectors.len(), 723, "expected 799 rows minus 76 synthetic");
++    assert_eq!(vectors[0].len(), 1024, "bge-m3 dimensionality");
++
++    let resp = run_pipeline(&Request {
++        protocol_version: PROTOCOL_VERSION,
++        vectors,
++        params: Params {
++            n_components: 10,
++            n_neighbors: 15,
++            min_cluster_size: 5,
++            seed: 42,
++        },
++    });
++    assert!(resp.error.is_none(), "pipeline errored: {:?}", resp.error);
++
++    let mut labels = resp.assignments.clone();
++    labels.sort_unstable();
++    labels.dedup();
++    let clusters = labels.iter().filter(|&&l| l >= 0).count();
++    let noise = resp.assignments.iter().filter(|&&l| l == -1).count();
++    let noise_pct = 100.0 * noise as f64 / resp.assignments.len() as f64;
++
++    eprintln!("clusters={clusters} noise={noise_pct:.1}%");
++
++    // The MVD's established envelope. Deliberately a band, not an equality:
++    // a dependency patch may shift the exact count without breaking the
++    // pipeline, but leaving this band means something real changed.
++    assert!(
++        (30..=60).contains(&clusters),
++        "cluster count {clusters} outside the 30-60 gate"
++    );
++    assert!(
++        (10.0..=35.0).contains(&noise_pct),
++        "noise {noise_pct:.1}% outside the 10-35% gate"
++    );
++}
++```
++
++- [ ] **Step 2: Run it unset to verify it skips cleanly**
++
++Run: `cargo test -p holomap-clusterer --test fixture_regression`
++Expected: PASS, prints `skipping: HOLOMAP_CLUSTERER_FIXTURE unset`.
++
++- [ ] **Step 3: Run it against the real fixture**
++
++```bash
++HOLOMAP_CLUSTERER_FIXTURE=/mnt/data/Develop/coda-fixtures/2026-06-05-claude-corpus-799.tsv \
++  cargo test -p holomap-clusterer --test fixture_regression -- --nocapture
++```
++
++Expected: PASS, printing `clusters=36 noise=30.0%` or values inside the gate bands. (27.2% is the sklearn-clustered figure for the same reduction — not this pipeline's.) **If clusters is 13 and noise ~45%, `min_dist` has been changed to 0.0 — revert it to holomap's default.** If clusters is 8, `min_samples` has been set — unset it.
++
++- [ ] **Step 4: Commit**
++
++```bash
++git add crates/holomap-clusterer/tests/fixture_regression.rs
++git commit -m "test: reference-corpus regression gate for the clusterer pipeline
++
++The unit suite proves the code moved. This proves the pipeline still
++behaves — 36 clusters / 30.0% noise on the real 723-row corpus, the
++first recorded baseline for the all-Rust pipeline.
++
++Env-gated on HOLOMAP_CLUSTERER_FIXTURE so the 9.4 MB fixture stays out
++of the repo, mirroring hydra's POSTGRES_URL-gated suites. Asserts the
++MVD's 30-60 / 10-35% band rather than exact equality: a dependency patch
++may shift the count without breaking the pipeline, but leaving the band
++means something real changed.
++
++Written by [mnmal-ai-claude](https://github.com/mnmal-ai-claude) with [Claude Code](https://claude.com/claude-code)"
++```
++
++---
++
++### Task 3: wasm binding
++
++Expose `run_pipeline` to JS behind a `wasm` feature, leaving the native crate and binary untouched.
++
++**Files:**
++- Modify: `crates/holomap-clusterer/Cargo.toml`
++- Modify: `crates/holomap-clusterer/src/lib.rs`
++- Create: `crates/holomap-clusterer/src/wasm.rs`
++
++**Interfaces:**
++- Produces: wasm export `reduce_and_cluster(vectors: &[f32], n_features: usize, n_components: usize, n_neighbors: usize, min_cluster_size: usize, seed: f64) -> Result<Vec<i32>, JsError>` — six parameters. `n_rows` is NOT a parameter; it is derived as `vectors.len() / n_features`. `seed` is `f64` because JS numbers are doubles; the binding casts to `u64`, and that cast saturates — NaN and negatives become 0, and values above 2^53 lose precision. Task 5's TypeScript layer guards this.
++
++- [ ] **Step 1: Add the feature and dependency**
++
++In `crates/holomap-clusterer/Cargo.toml`, append:
++
++```toml
++[features]
++default = []
++wasm = ["dep:wasm-bindgen"]
++
++[dependencies.wasm-bindgen]
++version = "0.2"
++optional = true
++
++[lib]
++crate-type = ["cdylib", "rlib"]
++```
++
++`rlib` keeps the native binary and integration tests working; `cdylib` is what `wasm-pack` needs.
++
++- [ ] **Step 2: Write the failing test**
++
++Append to `crates/holomap-clusterer/tests/protocol.rs`:
++
++```rust
++/// The wasm binding flattens a row-major input into the Vec<Vec<f32>> that
++/// run_pipeline takes. That reshape is the only logic the binding adds, so
++/// it is the only part worth testing on the native side — the wasm-specific
++/// behaviour is covered by the JS suite.
++#[test]
++fn flatten_reshapes_row_major_input() {
++    let flat = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
++    let rows = holomap_clusterer::wasm::reshape(&flat, 3);
++    assert_eq!(rows, vec![vec![1.0, 2.0, 3.0], vec![4.0, 5.0, 6.0]]);
++}
++
++#[test]
++fn flatten_rejects_ragged_input() {
++    let flat = vec![1.0f32, 2.0, 3.0, 4.0, 5.0];
++    assert!(std::panic::catch_unwind(|| holomap_clusterer::wasm::reshape(&flat, 3)).is_err());
++}
++```
++
++- [ ] **Step 3: Run to verify it fails**
++
++Run: `cargo test -p holomap-clusterer`
++Expected: FAIL — `could not find 'wasm' in 'holomap_clusterer'`.
++
++- [ ] **Step 4: Write the binding**
++
++`crates/holomap-clusterer/src/wasm.rs`:
++
++```rust
++//! WebAssembly binding.
++//!
++//! Wraps `run_pipeline` unchanged. The only logic here is marshalling: a
++//! flat row-major Float32Array in, an Int32Array of labels out.
++//!
++//! `run_pipeline` is deliberately NOT refactored to take a flat slice. One
++//! Vec allocation per row is 723 on the reference corpus and 50k at the
++//! ceiling — nothing beside an O(N²·d) kNN — and changing tested production
++//! code for a micro-optimisation is the wrong trade.
++
++/// holomap's honest envelope, set by its exact O(N²·d) kNN.
++///
++/// A constant rather than a parameter: a configurable ceiling lets a caller
++/// opt into an unbounded run with no way to know what they asked for. The
++/// guard is wasm-only — a blocked worker thread is a wasm-specific hazard,
++/// and the subprocess path is unaffected.
++pub const MAX_ROWS: usize = 50_000;
++
++/// Reshape a flat row-major buffer into rows. Panics on a ragged length;
++/// the caller checks divisibility first and returns a JS error.
++pub fn reshape(flat: &[f32], n_features: usize) -> Vec<Vec<f32>> {
++    assert!(n_features > 0, "n_features must be positive");
++    assert!(
++        flat.len() % n_features == 0,
++        "buffer length {} is not divisible by n_features {}",
++        flat.len(),
++        n_features
++    );
++    flat.chunks_exact(n_features).map(<[f32]>::to_vec).collect()
++}
++
++#[cfg(feature = "wasm")]
++mod bindings {
++    use super::{reshape, MAX_ROWS};
++    use crate::pipeline::run_pipeline;
++    use crate::protocol::{Params, Request, PROTOCOL_VERSION};
++    use wasm_bindgen::prelude::*;
++
++    #[wasm_bindgen]
++    pub fn reduce_and_cluster(
++        vectors: &[f32],
++        n_features: usize,
++        n_components: usize,
++        n_neighbors: usize,
++        min_cluster_size: usize,
++        seed: f64,
++    ) -> Result<Vec<i32>, JsError> {
++        if n_features == 0 {
++            return Err(JsError::new("n_features must be positive"));
++        }
++        if vectors.len() % n_features != 0 {
++            return Err(JsError::new(&format!(
++                "buffer length {} is not divisible by n_features {n_features}",
++                vectors.len()
++            )));
++        }
++        let n_rows = vectors.len() / n_features;
++        if n_rows > MAX_ROWS {
++            return Err(JsError::new(&format!(
++                "{n_rows} rows exceeds MAX_ROWS {MAX_ROWS} — holomap's exact kNN is O(N^2*d); \
++                 use the subprocess backend for corpora this size"
++            )));
++        }
++
++        let resp = run_pipeline(&Request {
++            protocol_version: PROTOCOL_VERSION,
++            vectors: reshape(vectors, n_features),
++            params: Params {
++                n_components,
++                n_neighbors,
++                min_cluster_size,
++                seed: seed as u64,
++            },
++        });
++
++        // The Rust side reports errors in-band for the sidecar's per-line
++        // contract. JS gets a throw instead: a resolved object carrying an
++        // error field invites callers to ignore it.
++        match resp.error {
++            Some(e) => Err(JsError::new(&e)),
++            None => Ok(resp.assignments),
++        }
++    }
++}
++```
++
++Add to `crates/holomap-clusterer/src/lib.rs`:
++
++```rust
++pub mod pipeline;
++pub mod protocol;
++pub mod wasm;
++```
++
++- [ ] **Step 5: Run tests to verify they pass**
++
++Run: `cargo test -p holomap-clusterer`
++Expected: **8 passed** (6 original + 2 new), exit 0.
++
++- [ ] **Step 6: Build the wasm artifact**
++
++```bash
++cargo install wasm-pack --locked   # if absent
++cd crates/holomap-clusterer
++RUSTFLAGS="-C target-feature=+simd128" \
++  wasm-pack build --release --target nodejs --features wasm --out-dir pkg
++ls -la pkg/
++```
++
++Expected: `pkg/holomap_clusterer_bg.wasm`, `pkg/holomap_clusterer.js`, `pkg/holomap_clusterer.d.ts`.
++
++`+simd128` is kept because it is free, NOT because it was measured to help: with the module warmed before timing, n=723 is identical with and without it and n=10k differs ~2.2% single-shot. Do not restate the auto-vectorisation rationale as if it were established.
++
++- [ ] **Step 7: Gitignore the build output**
++
++Append to `.gitignore`:
++
++```
++crates/holomap-clusterer/pkg/
++```
++
++- [ ] **Step 8: Commit**
++
++```bash
++git add crates/holomap-clusterer/Cargo.toml crates/holomap-clusterer/src/wasm.rs \
++        crates/holomap-clusterer/src/lib.rs crates/holomap-clusterer/tests/protocol.rs .gitignore
++git commit -m "feat: wasm binding for the clusterer, behind a \`wasm\` feature
++
++Marshalling only — flat Float32Array in, Int32Array of labels out — wrapping
++run_pipeline unchanged. Native crate and binary are untouched: the feature is
++off by default and crate-type gains cdylib alongside rlib.
++
++Errors throw rather than resolving in-band. In-band is right for the sidecar's
++per-line contract, but a JS call resolving to an object carrying an error field
++invites callers to ignore it.
++
++MAX_ROWS is a constant, not a parameter — a configurable ceiling lets a caller
++opt into an unbounded run with no way to know what they asked for.
++
++Written by [mnmal-ai-claude](https://github.com/mnmal-ai-claude) with [Claude Code](https://claude.com/claude-code)"
++```
++
++---
++
++### Task 4: npm package with the interface and `SubprocessClusterer`
++
++Scaffold the package and move the TypeScript interface plus the subprocess backend across verbatim.
++
++**Files:**
++- Create: `npm/{package.json,tsconfig.json,vitest.config.ts}`
++- Create: `npm/src/{types,subprocess-clusterer,index}.ts`
++- Test: `npm/test/subprocess-clusterer.test.ts`
++
++**Interfaces:**
++- Produces: `ClusterParams { nComponents, nNeighbors, minClusterSize, seed }`, `ClusterResult { assignments: readonly number[]; probabilities?: readonly number[] }`, `interface Clusterer { cluster(vectors: readonly Float32Array[], params: ClusterParams): Promise<ClusterResult> }`, `class ClustererError extends Error`, `class SubprocessClusterer implements Clusterer`.
++
++- [ ] **Step 1: Scaffold the package**
++
++`npm/package.json`:
++
++```json
++{
++  "name": "@mnmal-ai/holomap-clusterer",
++  "version": "0.1.0",
++  "description": "Deterministic reduce→cluster: holomap UMAP + HDBSCAN. One Clusterer interface, wasm and subprocess backends.",
++  "license": "MIT OR Apache-2.0",
++  "repository": { "type": "git", "url": "git+https://github.com/mnmal-ai/holomap.git", "directory": "npm" },
++  "type": "module",
++  "main": "./dist/index.js",
++  "types": "./dist/index.d.ts",
++  "exports": { ".": { "import": "./dist/index.js", "types": "./dist/index.d.ts" } },
++  "files": ["dist", "wasm"],
++  "scripts": {
++    "build": "tsc -p tsconfig.json",
++    "test": "vitest run",
++    "check-types": "tsc -p tsconfig.json --noEmit"
++  },
++  "devDependencies": {
++    "typescript": "^5.7.0",
++    "vitest": "^3.0.0",
++    "@types/node": "^22.0.0"
++  }
++}
++```
++
++`npm/tsconfig.json`:
++
++```json
++{
++  "compilerOptions": {
++    "target": "ES2022",
++    "module": "NodeNext",
++    "moduleResolution": "NodeNext",
++    "strict": true,
++    "exactOptionalPropertyTypes": true,
++    "declaration": true,
++    "outDir": "dist",
++    "rootDir": "src",
++    "skipLibCheck": true
++  },
++  "include": ["src"]
++}
++```
++
++`npm/vitest.config.ts`:
++
++```ts
++import { defineConfig } from 'vitest/config';
++
++export default defineConfig({
++  test: { include: ['test/**/*.test.ts'], testTimeout: 120_000 }
++});
++```
++
++The 120 s timeout exists because the wasm backend's reference-corpus run is tens of seconds.
++
++- [ ] **Step 2: Write the types**
++
++`npm/src/types.ts` — copied verbatim from `coda/packages/dynamics/src/clusterer.ts`, which is the production definition:
++
++```ts
++export interface ClusterParams {
++  /** 0 = skip reduction (protocol convention). */
++  nComponents: number;
++  nNeighbors: number;
++  minClusterSize: number;
++  seed: number;
++}
++
++export interface ClusterResult {
++  /** Label per input vector; -1 = noise (HDBSCAN convention). */
++  assignments: readonly number[];
++  /**
++   * Never populated by either backend: hdbscan 0.12's .cluster() returns
++   * labels only. Present for protocol forward-compatibility.
++   */
++  probabilities?: readonly number[];
++}
++
++export interface Clusterer {
++  cluster(vectors: readonly Float32Array[], params: ClusterParams): Promise<ClusterResult>;
++}
++
++export class ClustererError extends Error {
++  constructor(detail: string) {
++    super(detail);
++    this.name = 'ClustererError';
++  }
++}
++
++export interface ProtocolResponse {
++  protocol_version: number;
++  assignments: number[];
++  probabilities?: number[];
++  error?: string;
++}
++```
++
++- [ ] **Step 3: Move `SubprocessClusterer` verbatim**
++
++Copy the `SubprocessClusterer` class from `coda/packages/dynamics/src/clusterer.ts` (lines 44–117) into `npm/src/subprocess-clusterer.ts`, changing only the imports:
++
++```ts
++import { spawn } from 'node:child_process';
++import { type ClusterParams, type ClusterResult, ClustererError, type Clusterer, type ProtocolResponse } from './types.js';
++```
++
++**Do not otherwise modify the class.** It is production code; a rewrite during a move is how behaviour gets lost.
++
++`npm/src/index.ts`:
++
++```ts
++export * from './types.js';
++export { SubprocessClusterer } from './subprocess-clusterer.js';
++export { WasmClusterer } from './wasm-clusterer.js';
++```
++
++`WasmClusterer` arrives in Task 5; until then this line will not compile, so add it in Task 5 and export only the subprocess backend for now.
++
++- [ ] **Step 4: Write the failing test**
++
++`npm/test/subprocess-clusterer.test.ts`:
++
++```ts
++import { describe, expect, it } from 'vitest';
++import { ClustererError, SubprocessClusterer } from '../src/index.js';
++
++const BIN = new URL('../../target/release/holomap-clusterer', import.meta.url).pathname;
++
++function blobs(): Float32Array[] {
++  let state = 42n;
++  const next = () => {
++    state = (state * 6364136223846793005n + 1442695040888963407n) & 0xffffffffffffffffn;
++    return Number(state >> 33n) / 0xffffffff - 0.5;
++  };
++  const out: Float32Array[] = [];
++  for (let blob = 0; blob < 3; blob++) {
++    for (let i = 0; i < 30; i++) {
++      const v = new Float32Array(8);
++      v[blob * 2] = 10.0;
++      for (let j = 0; j < 8; j++) v[j] += next() * 0.5;
++      out.push(v);
++    }
++  }
++  return out;
++}
++
++describe('SubprocessClusterer', () => {
++  it('separates three blobs', async () => {
++    const clusterer = new SubprocessClusterer([BIN]);
++    const result = await clusterer.cluster(blobs(), {
++      nComponents: 0, nNeighbors: 15, minClusterSize: 5, seed: 42
++    });
++    const labels = new Set(result.assignments.filter((l) => l >= 0));
++    expect(labels.size).toBe(3);
++  });
++
++  it('throws ClustererError on an empty argv', () => {
++    expect(() => new SubprocessClusterer([])).toThrow(ClustererError);
++  });
++});
++```
++
++- [ ] **Step 5: Run to verify it fails**
++
++Run: `cd npm && pnpm install && pnpm test`
++Expected: FAIL — the binary does not exist yet at that path.
++
++- [ ] **Step 6: Build the native binary and re-run**
++
++```bash
++cd /mnt/data/Develop/holomap && cargo build --release -p holomap-clusterer
++cd npm && pnpm test
++```
++
++Expected: PASS, 2 tests.
++
++- [ ] **Step 7: Commit**
++
++```bash
++git add npm
++git commit -m "feat: npm package with the Clusterer interface and subprocess backend
++
++Interface and SubprocessClusterer move verbatim from coda/packages/dynamics/
++src/clusterer.ts — production code that has already survived one backend swap
++(clusterer.py -> Rust binary, 2026-06-07). Copied rather than rewritten: a
++rewrite during a move is how behaviour gets lost.
++
++probabilities is documented as never populated. hdbscan 0.12's .cluster()
++returns labels only; the field exists for protocol forward-compatibility.
++
++Written by [mnmal-ai-claude](https://github.com/mnmal-ai-claude) with [Claude Code](https://claude.com/claude-code)"
++```
++
++---
++
++### Task 5: `WasmClusterer`
++
++The bundled backend, plus proof it runs inside a worker thread.
++
++**Files:**
++- Create: `npm/src/wasm-clusterer.ts`
++- Modify: `npm/src/index.ts`, `npm/package.json`
++- Test: `npm/test/wasm-clusterer.test.ts`, `npm/test/worker-smoke.test.ts`
++
++**Interfaces:**
++- Consumes: `Clusterer`, `ClusterParams`, `ClusterResult`, `ClustererError` from `./types.js`; the wasm export `reduce_and_cluster` from Task 3.
++- Produces: `class WasmClusterer implements Clusterer`.
++
++- [ ] **Step 1: Wire the wasm artifact into the package**
++
++```bash
++# wasm-pack is NOT used: wasm-pack 0.15.0 invokes `cargo build --out-dir`
++# internally, and cargo 1.95.0 renamed that unstable flag to --artifact-dir,
++# so every wasm-pack build fails. Reproduced independently 2026-08-05.
++#
++# The direct route is also strictly better: wasm-bindgen-cli MUST match the
++# wasm-bindgen crate version exactly, and a mismatch fails in confusing ways.
++# wasm-pack hid that coupling; here it is explicit and derived from Cargo.lock.
++cd /mnt/data/Develop/holomap/.worktrees/holomap-clusterer
++
++WB_VERSION=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | grep '^version' | cut -d'"' -f2)
++echo "matching wasm-bindgen-cli to crate version $WB_VERSION"
++cargo install wasm-bindgen-cli --version "$WB_VERSION" --locked
++
++RUSTFLAGS="-C target-feature=+simd128" \
++  cargo build --release --target wasm32-unknown-unknown -p holomap-clusterer --features wasm
++
++wasm-bindgen --target nodejs --out-dir npm/wasm \
++  target/wasm32-unknown-unknown/release/holomap_clusterer.wasm
++ls -la npm/wasm/
++```
++
++Expected: `npm/wasm/holomap_clusterer_bg.wasm` (~255 KB), `holomap_clusterer.js`, `holomap_clusterer.d.ts`.
++
++Add to `npm/package.json` scripts (a shell script keeps the version-derivation readable):
++
++```json
++"build:wasm": "bash ../scripts/build-wasm.sh"
++```
++
++Create `scripts/build-wasm.sh` at the repo root with the command block above (minus the `cd`), `set -euo pipefail` at the top, and `chmod +x`. CI calls the same script, so the build path has exactly one definition.
++
++- [ ] **Step 2: Write the failing test**
++
++`npm/test/wasm-clusterer.test.ts`:
++
++```ts
++import { describe, expect, it } from 'vitest';
++import { ClustererError, WasmClusterer } from '../src/index.js';
++
++function blobs(): Float32Array[] {
++  let state = 42n;
++  const next = () => {
++    state = (state * 6364136223846793005n + 1442695040888963407n) & 0xffffffffffffffffn;
++    return Number(state >> 33n) / 0xffffffff - 0.5;
++  };
++  const out: Float32Array[] = [];
++  for (let blob = 0; blob < 3; blob++) {
++    for (let i = 0; i < 30; i++) {
++      const v = new Float32Array(8);
++      v[blob * 2] = 10.0;
++      for (let j = 0; j < 8; j++) v[j] += next() * 0.5;
++      out.push(v);
++    }
++  }
++  return out;
++}
++
++const PARAMS = { nComponents: 0, nNeighbors: 15, minClusterSize: 5, seed: 42 };
++
++describe('WasmClusterer', () => {
++  it('separates three blobs', async () => {
++    const result = await new WasmClusterer().cluster(blobs(), PARAMS);
++    expect(new Set(result.assignments.filter((l) => l >= 0)).size).toBe(3);
++  });
++
++  it('is deterministic across runs', async () => {
++    const c = new WasmClusterer();
++    const a = await c.cluster(blobs(), PARAMS);
++    const b = await c.cluster(blobs(), PARAMS);
++    expect(a.assignments).toEqual(b.assignments);
++  });
++
++  it('throws ClustererError on ragged input', async () => {
++    const ragged = [new Float32Array(8), new Float32Array(5)];
++    await expect(new WasmClusterer().cluster(ragged, PARAMS)).rejects.toThrow(ClustererError);
++  });
++
++  it.each([Number.NaN, -1, 1.5, 2 ** 53])('rejects seed %p rather than coercing it', async (seed) => {
++    await expect(
++      new WasmClusterer().cluster(blobs(), { ...PARAMS, seed })
++    ).rejects.toThrow(/seed must be/);
++  });
++
++  it('throws ClustererError above MAX_ROWS', async () => {
++    const many = Array.from({ length: 50_001 }, () => new Float32Array(2));
++    await expect(new WasmClusterer().cluster(many, PARAMS)).rejects.toThrow(/MAX_ROWS/);
++  });
++});
++```
++
++- [ ] **Step 3: Run to verify it fails**
++
++Run: `cd npm && pnpm test wasm-clusterer`
++Expected: FAIL — `WasmClusterer` is not exported.
++
++- [ ] **Step 4: Implement**
++
++`npm/src/wasm-clusterer.ts`:
++
++```ts
++import { createRequire } from 'node:module';
++import {
++  type ClusterParams,
++  type ClusterResult,
++  ClustererError,
++  type Clusterer
++} from './types.js';
++
++// wasm-pack --target nodejs emits CJS glue. createRequire loads it from an
++// ESM module without a bundler step, and resolves the .wasm relative to the
++// package's own directory so consumers never handle asset paths.
++const require = createRequire(import.meta.url);
++
++interface WasmModule {
++  reduce_and_cluster(
++    vectors: Float32Array,
++    nFeatures: number,
++    nComponents: number,
++    nNeighbors: number,
++    minClusterSize: number,
++    seed: number
++  ): Int32Array;
++}
++
++/**
++ * Bundled wasm backend — the default.
++ *
++ * The module is loaded lazily on first use, never at import time, so this
++ * file can be imported inside a worker_threads Worker without side effects.
++ * Consumers SHOULD run it in a worker: the batch is CPU-bound for tens of
++ * seconds and would otherwise block the event loop.
++ */
++export class WasmClusterer implements Clusterer {
++  #module: WasmModule | undefined;
++
++  #load(): WasmModule {
++    this.#module ??= require('../wasm/holomap_clusterer.js') as WasmModule;
++    return this.#module;
++  }
++
++  async cluster(
++    vectors: readonly Float32Array[],
++    params: ClusterParams
++  ): Promise<ClusterResult> {
++    if (vectors.length === 0) throw new ClustererError('empty input');
++
++    const nFeatures = vectors[0]!.length;
++    if (vectors.some((v) => v.length !== nFeatures)) {
++      throw new ClustererError('vector dimensions inconsistent');
++    }
++
++    // The Rust binding takes seed as f64 and casts to u64. That cast
++    // saturates: NaN and negatives silently become 0, and anything above
++    // 2^53 has already lost precision as a JS number. A seed that quietly
++    // becomes a different seed is the worst failure this API can have —
++    // determinism is the whole product — so reject rather than coerce.
++    if (!Number.isInteger(params.seed) || params.seed < 0 || params.seed > Number.MAX_SAFE_INTEGER) {
++      throw new ClustererError(
++        `seed must be a non-negative integer <= 2^53-1, got ${params.seed}`
++      );
++    }
++
++    // Flatten to row-major. One copy — negligible beside an O(N^2*d) kNN,
++    // and it keeps the production Clusterer signature unchanged.
++    const flat = new Float32Array(vectors.length * nFeatures);
++    for (let i = 0; i < vectors.length; i++) flat.set(vectors[i]!, i * nFeatures);
++
++    let assignments: Int32Array;
++    try {
++      assignments = this.#load().reduce_and_cluster(
++        flat,
++        nFeatures,
++        params.nComponents,
++        params.nNeighbors,
++        params.minClusterSize,
++        params.seed
++      );
++    } catch (e) {
++      throw new ClustererError(e instanceof Error ? e.message : String(e));
++    }
++
++    if (assignments.length !== vectors.length) {
++      throw new ClustererError(
++        `assignment count ${assignments.length} != input count ${vectors.length}`
++      );
++    }
++    return { assignments: Array.from(assignments) };
++  }
++}
++```
++
++Update `npm/src/index.ts` to add `export { WasmClusterer } from './wasm-clusterer.js';`
++
++- [ ] **Step 5: Run tests to verify they pass**
++
++Run: `cd npm && pnpm test wasm-clusterer`
++Expected: PASS, 4 tests.
++
++- [ ] **Step 6: Write the worker smoke test**
++
++`npm/test/worker-smoke.test.ts`:
++
++```ts
++import { Worker } from 'node:worker_threads';
++import { describe, expect, it } from 'vitest';
++
++const WORKER = `
++import { parentPort } from 'node:worker_threads';
++import { WasmClusterer } from '${new URL('../src/index.ts', import.meta.url).pathname}';
++const vectors = [];
++for (let blob = 0; blob < 3; blob++)
++  for (let i = 0; i < 30; i++) {
++    const v = new Float32Array(8);
++    v[blob * 2] = 10.0;
++    v[7] = i * 0.01;
++    vectors.push(v);
++  }
++const r = await new WasmClusterer().cluster(vectors,
++  { nComponents: 0, nNeighbors: 15, minClusterSize: 5, seed: 42 });
++parentPort.postMessage(r.assignments);
++`;
++
++describe('worker_threads', () => {
++  it('loads and runs inside a Worker with no top-level side effects', async () => {
++    const assignments = await new Promise<number[]>((resolve, reject) => {
++      const w = new Worker(WORKER, { eval: true, execArgv: ['--experimental-strip-types'] });
++      w.on('message', resolve);
++      w.on('error', reject);
++    });
++    expect(new Set(assignments.filter((l) => l >= 0)).size).toBe(3);
++  });
++});
++```
++
++- [ ] **Step 7: Run it**
++
++Run: `cd npm && pnpm test worker-smoke`
++Expected: PASS. A failure here means the module has import-time side effects — fix `wasm-clusterer.ts` to defer loading, do not relax the test.
++
++- [ ] **Step 8: Commit**
++
++```bash
++git add npm
++git commit -m "feat: WasmClusterer — the bundled default backend
++
++Lazy module load, never at import time, so the file can be imported inside a
++worker_threads Worker. The worker smoke test is the gate on that: consumers
++should run this in a worker because the batch is CPU-bound for tens of seconds
++and would otherwise block an event loop serving live traffic.
++
++Flattens to row-major inside the backend rather than changing the production
++Clusterer signature — one copy, negligible beside an O(N^2*d) kNN.
++
++Written by [mnmal-ai-claude](https://github.com/mnmal-ai-claude) with [Claude Code](https://claude.com/claude-code)"
++```
++
++---
++
++### Task 6: Backend equivalence and the measured gates
++
++The test that keeps dual-path honest, plus the wall-clock numbers the spec's gate 5 asks for.
++
++**Files:**
++- Test: `npm/test/backend-equivalence.test.ts`
++- Create: `npm/bench/measure.ts`
++
++**Interfaces:**
++- Consumes: `WasmClusterer`, `SubprocessClusterer`, `ClusterParams`.
++
++- [ ] **Step 1: Write the equivalence test**
++
++`npm/test/backend-equivalence.test.ts`:
++
++```ts
++import { describe, expect, it } from 'vitest';
++import { SubprocessClusterer, WasmClusterer } from '../src/index.js';
++
++const BIN = new URL('../../target/release/holomap-clusterer', import.meta.url).pathname;
++const PARAMS = { nComponents: 5, nNeighbors: 15, minClusterSize: 5, seed: 1234 };
++
++function blobs(dims: number): Float32Array[] {
++  let state = 42n;
++  const next = () => {
++    state = (state * 6364136223846793005n + 1442695040888963407n) & 0xffffffffffffffffn;
++    return Number(state >> 33n) / 0xffffffff - 0.5;
++  };
++  const out: Float32Array[] = [];
++  for (let blob = 0; blob < 3; blob++) {
++    for (let i = 0; i < 30; i++) {
++      const v = new Float32Array(dims);
++      v[blob * 2] = 10.0;
++      for (let j = 0; j < dims; j++) v[j] += next() * 0.5;
++      out.push(v);
++    }
++  }
++  return out;
++}
++
++/**
++ * Gate 3. The bar is NOT byte-identity: holomap promises only structural
++ * identity cross-platform ("floats may differ at ULP level"), so native-on-
++ * Linux and native-on-macOS may already differ, and HDBSCAN is a density
++ * algorithm where small coordinate perturbations flip boundary points.
++ * Requiring wasm to match native more tightly than native matches itself
++ * would be an unfair gate.
++ *
++ * What must hold is that both backends recover the same STRUCTURE. If this
++ * ever fails, the fix is not to loosen it — it is to record the backend in
++ * provenance so a switch is observable, and investigate the divergence.
++ */
++describe('backend equivalence', () => {
++  it('both backends recover the same cluster structure', async () => {
++    const vectors = blobs(32);
++    const wasm = await new WasmClusterer().cluster(vectors, PARAMS);
++    const native = await new SubprocessClusterer([BIN]).cluster(vectors, PARAMS);
++
++    const count = (a: readonly number[]) => new Set(a.filter((l) => l >= 0)).size;
++    const noise = (a: readonly number[]) => a.filter((l) => l === -1).length;
++
++    expect(count(wasm.assignments)).toBe(count(native.assignments));
++    expect(Math.abs(noise(wasm.assignments) - noise(native.assignments))).toBeLessThanOrEqual(2);
++  });
++});
++```
++
++- [ ] **Step 2: Run it**
++
++Run: `cd npm && pnpm test backend-equivalence`
++Expected: PASS. A failure is a real finding — report the cluster counts and noise from both backends before changing anything.
++
++- [ ] **Step 3: Write the measurement harness**
++
++`npm/bench/measure.ts`:
++
++```ts
++/**
++ * Gate 5. Wall clock and peak RSS for both backends.
++ *
++ * Run with the wasm built both ways to quantify the auto-vectorisation gap:
++ *   pnpm build:wasm && pnpm tsx bench/measure.ts          # with +simd128
++ *   (rebuild without RUSTFLAGS, re-run)                   # without
++ *
++ * Native reference from holomap's README: ~3 s at 1k x 50-d, ~26 s at 10k.
++ * The gate fails only if 10k exceeds 300 s.
++ */
++import { SubprocessClusterer, WasmClusterer } from '../src/index.js';
++
++const BIN = new URL('../../target/release/holomap-clusterer', import.meta.url).pathname;
++
++function synthetic(n: number, dims: number): Float32Array[] {
++  let state = 7n;
++  const next = () => {
++    state = (state * 6364136223846793005n + 1442695040888963407n) & 0xffffffffffffffffn;
++    return Number(state >> 33n) / 0xffffffff - 0.5;
++  };
++  return Array.from({ length: n }, (_, i) => {
++    const v = new Float32Array(dims);
++    v[i % dims] = 10.0;
++    for (let j = 0; j < dims; j++) v[j] += next() * 0.5;
++    return v;
++  });
++}
++
++const PARAMS = { nComponents: 10, nNeighbors: 15, minClusterSize: 5, seed: 42 };
++
++for (const n of [723, 10_000]) {
++  const vectors = synthetic(n, 50);
++  for (const [name, clusterer] of [
++    ['wasm', new WasmClusterer()],
++    ['subprocess', new SubprocessClusterer([BIN])]
++  ] as const) {
++    const t0 = performance.now();
++    await clusterer.cluster(vectors, PARAMS);
++    const secs = (performance.now() - t0) / 1000;
++    const rss = process.memoryUsage().rss / 1024 / 1024;
++    console.log(`${name} n=${n} wall=${secs.toFixed(1)}s rss=${rss.toFixed(0)}MB`);
++  }
++}
++```
++
++- [ ] **Step 4: Run the measurements and record them**
++
++```bash
++cd npm && pnpm tsx bench/measure.ts | tee /tmp/measure-simd128.txt
++```
++
++Then rebuild the wasm **without** `RUSTFLAGS` and re-run into `/tmp/measure-nosimd.txt`. Paste both tables into the PR description. If 10k exceeds 300 s for the wasm backend, gate 5 fails — stop and report rather than proceeding to Task 7.
++
++- [ ] **Step 5: Commit**
++
++```bash
++git add npm/test/backend-equivalence.test.ts npm/bench/measure.ts
++git commit -m "test: backend equivalence + measured wall-clock gates
++
++Equivalence asserts both backends recover the same STRUCTURE, not byte-identical
++labels. holomap promises only structural identity cross-platform, so native-vs-
++native may already differ at ULP level and HDBSCAN can flip boundary points on
++that — demanding wasm match native more tightly than native matches itself would
++be an unfair gate.
++
++measure.ts quantifies the +simd128 auto-vectorisation gap rather than assuming
++it. That number is what any future 'should we just use the sidecar' conversation
++should be argued from.
++
++Written by [mnmal-ai-claude](https://github.com/mnmal-ai-claude) with [Claude Code](https://claude.com/claude-code)"
++```
++
++---
++
++### Task 7: CI, and stop committing the wasm artifact
++
++Extend holomap's existing matrix to cover the workspace, the wasm build, and the npm suite — and make CI the only producer of the wasm binary.
++
++**Files:**
++- Modify: `.github/workflows/ci.yml`, `.gitignore`, `npm/package.json`
++
++- [ ] **Step 0: Untrack the wasm artifact**
++
++`npm/wasm/` is currently git-tracked, including a 261 KB `.wasm` binary committed in Task 5. That was not deliberate — it survived only because a rebuild happened to be byte-identical. A checked-in build artifact can silently drift from the source it was built from, which is exactly the failure this project keeps meeting. Decision (Rich, 2026-08-05): **not committed; CI builds it.**
++
++```bash
++cd /mnt/data/Develop/holomap/.worktrees/holomap-clusterer
++git rm --cached -r npm/wasm/
++printf '\n# wasm build output — produced by scripts/build-wasm.sh, never committed\nnpm/wasm/\n' >> .gitignore
++git check-ignore -v npm/wasm/holomap_clusterer_bg.wasm   # must now report a match
++git ls-files npm/wasm/                                    # must print nothing
++```
++
++The files stay on disk — `git rm --cached` untracks without deleting, so the local suite keeps working.
++
++- [ ] **Step 1: Make publishing unable to ship a stale or missing artifact**
++
++Add to `npm/package.json` scripts:
++
++```json
++"prepublishOnly": "bash ../scripts/build-wasm.sh"
++```
++
++Now the artifact cannot be absent or stale at publish time, which is the whole reason it was safe to untrack. Also document the local requirement — add to `npm/package.json`:
++
++```json
++"pretest": "test -f wasm/holomap_clusterer.js || { echo 'wasm artifact missing — run: pnpm build:wasm'; exit 1; }"
++```
++
++Verify both the pass and fail paths before committing: run `pnpm test` with the artifact present (must proceed), then `mv wasm /tmp/wasm-bak && pnpm test` (must print the message and exit non-zero), then `mv /tmp/wasm-bak wasm`. A guard nobody has watched fire is not a guard.
++
++A developer on a fresh clone otherwise meets an opaque module-resolution error; this tells them the one command to run.
++
++
++- [ ] **Step 1: Add the wasm and npm jobs**
++
++Append to `.github/workflows/ci.yml`, and change the existing `lint` and `test` jobs' `cargo` invocations to `--workspace` so the new crate is covered:
++
++```yaml
++  wasm:
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
++      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable as of 2026-06-07
++        with:
++          targets: wasm32-unknown-unknown
++      - name: Build wasm
++        run: bash scripts/build-wasm.sh
++      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
++        with: { version: 10 }
++      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v5.0.0
++        with: { node-version: 22 }
++      - name: Build the native binary for the subprocess backend
++        run: cargo build --release -p holomap-clusterer
++      - name: npm suite
++        working-directory: npm
++        run: pnpm install --frozen-lockfile && pnpm check-types && pnpm test
++```
++
++The wasm job builds the native binary too: `backend-equivalence.test.ts` and `subprocess-clusterer.test.ts` both need it, so a wasm-only job would silently skip half the suite.
++
++- [ ] **Step 2: Verify the workflow parses**
++
++Run: `gh workflow view ci.yml --repo mnmal-ai/holomap` after pushing, or lint locally with `actionlint .github/workflows/ci.yml` if available.
++
++- [ ] **Step 3: Commit and push, then confirm CI is green**
++
++```bash
++git add .github/workflows/ci.yml
++git commit -m "ci: cover the workspace, the wasm build and the npm suite
++
++cargo jobs move to --workspace so holomap-clusterer is tested alongside
++holomap. The wasm job also builds the native binary: the equivalence and
++subprocess suites need it, and a wasm-only job would silently skip half
++the tests.
++
++Written by [mnmal-ai-claude](https://github.com/mnmal-ai-claude) with [Claude Code](https://claude.com/claude-code)"
++git push -u origin feat/holomap-clusterer
++gh run watch
++```
++
++Expected: all jobs green. Do not proceed to Task 8 on a red run.
++
++---
++
++### Task 8: Publish
++
++**Files:**
++- Modify: `.github/workflows/publish.yml`
++
++- [ ] **Step 1: Open the PR and merge**
++
++```bash
++gh pr create --title "feat: holomap-clusterer — deterministic reduce→cluster, wasm + subprocess backends" \
++             --body-file /tmp/holomap-clusterer-pr.md
++```
++
++Write the body to `/tmp/holomap-clusterer-pr.md` first — never inline heredoc. Include the gate-5 measurement tables from Task 6.
++
++- [ ] **Step 2: Publish the crate**
++
++holomap already has tokenless trusted publishing to crates.io. Follow its existing release convention: a `release/vX.Y.Z` branch with the version bump, merged with a `release: v` commit subject. **Do not push the tag by hand** — the workflow tags and publishes.
++
++- [ ] **Step 3: Publish the npm package**
++
++```bash
++cd npm && pnpm build && pnpm publish --access public
++```
++
++Public because the crate is a thin composition of public `MIT OR Apache-2.0` crates and holomap is already public on crates.io. Verify: `npm view @mnmal-ai/holomap-clusterer version`.
++
++- [ ] **Step 4: Verify the published package works from a clean install**
++
++```bash
++cd $(mktemp -d) && pnpm init && pnpm add @mnmal-ai/holomap-clusterer
++node --input-type=module -e "
++import { WasmClusterer } from '@mnmal-ai/holomap-clusterer';
++const v = Array.from({length: 90}, (_, i) => {
++  const a = new Float32Array(8); a[(i % 3) * 2] = 10; a[7] = i * 0.01; return a;
++});
++const r = await new WasmClusterer().cluster(v, {nComponents:0,nNeighbors:15,minClusterSize:5,seed:42});
++console.log('clusters:', new Set(r.assignments.filter(l => l >= 0)).size);
++"
++```
++
++Expected: `clusters: 3`. This catches a broken `files` list or a missing wasm asset, which no in-repo test can.
++
++---
++
++### Task 9: Migrate coda
++
++**Files (in `/mnt/data/Develop/coda`):**
++- Modify: `packages/dynamics/package.json`, `packages/dynamics/src/clusterer.ts`, `packages/dynamics/src/index.ts`, `packages/dynamics/src/bin.ts`
++- Delete: `crates/coda-clusterer/`, root `Cargo.toml` workspace member
++
++- [ ] **Step 1: Branch and add the dependency**
++
++```bash
++cd /mnt/data/Develop/coda
++git checkout -b feat/adopt-holomap-clusterer
++pnpm --filter @mnmal-ai/coda-dynamics add @mnmal-ai/holomap-clusterer
++```
++
++- [ ] **Step 2: Replace the local module with a re-export**
++
++Replace the whole of `packages/dynamics/src/clusterer.ts` with:
++
++```ts
++/**
++ * Clusterer peripheral adapter — now supplied by @mnmal-ai/holomap-clusterer.
++ *
++ * The interface and SubprocessClusterer moved to that package when the
++ * clusterer crate did (holomap Decision 7c643598). Re-exported here so
++ * existing imports keep working; import from the package directly in new code.
++ */
++export {
++  type Clusterer,
++  type ClusterParams,
++  type ClusterResult,
++  ClustererError,
++  SubprocessClusterer,
++  WasmClusterer
++} from '@mnmal-ai/holomap-clusterer';
++```
++
++- [ ] **Step 3: Run the dynamics suite**
++
++Run: `pnpm --filter @mnmal-ai/coda-dynamics test`
++Expected: PASS, same count as before the change. `CODA_DYNAMICS_CLUSTERER` still works — it becomes the argv for the shared `SubprocessClusterer`.
++
++- [ ] **Step 4: Point the default argv at the published binary**
++
++In `packages/dynamics/src/bin.ts:73`, the default is `'target/release/coda-clusterer'`. Change it to `'target/release/holomap-clusterer'` and update the comment on line 70 to name the new crate and its repo.
++
++- [ ] **Step 5: Delete the local crate**
++
++```bash
++git rm -r crates/coda-clusterer
++```
++
++Remove `"crates/coda-clusterer"` from the root `Cargo.toml` workspace members. If it was the only member, remove the `[workspace]` block.
++
++Run: `cargo check --workspace`
++Expected: exit 0, or a clean "no targets" if the workspace is now empty.
++
++- [ ] **Step 6: Run coda's full gates**
++
++Run: `pnpm test && pnpm check-types && pnpm lint`
++Expected: all green, no count regressions.
++
++- [ ] **Step 7: Commit and PR**
++
++```bash
++git add -A
++git commit -m "refactor: adopt @mnmal-ai/holomap-clusterer, drop the local crate
++
++The clusterer crate and the TypeScript Clusterer interface moved to the
++holomap repo (Decision 7c643598) now that hydra-recall is a second consumer.
++clusterer.ts becomes a re-export so existing imports keep working.
++
++CODA_DYNAMICS_CLUSTERER is unchanged in meaning — it is now the argv for the
++shared SubprocessClusterer. The default moves to target/release/holomap-clusterer.
++
++Written by [mnmal-ai-claude](https://github.com/mnmal-ai-claude) with [Claude Code](https://claude.com/claude-code)"
++gh pr create --title "refactor: adopt @mnmal-ai/holomap-clusterer" --body-file /tmp/coda-adopt-pr.md
++```
++
++- [ ] **Step 8: Exercise the wasm backend against coda's real workload**
++
++Coda is the proving ground — it has the seam, the reference corpus, and a known-good result. Swap `WasmClusterer` in for one dynamics cycle and confirm the cluster count and noise land in the 30–60 / 10–35% band. Report the numbers. **Do not change coda's default backend** — this is a validation run, and the default stays subprocess until hydra-recall has its own reason to move.
++
++---
++
++## Self-Review
++
++**Spec coverage.** Move + rename + relicense → Task 1. Behaviour preservation → Tasks 1–2. wasm binding, `+simd128`, `MAX_ROWS`, throwing errors, no top-level side effects → Tasks 3, 5. npm package with both backends → Tasks 4–5. Gate 1 → Task 2; gates 2 and 4 → Task 5; gate 3 → Task 6; gate 5 → Task 6. CI → Task 7. Publish → Task 8. Coda migration and proving ground → Task 9.
++
++**One gap found and closed while writing:** the spec listed two must-survive behaviours (`min_samples` unset, `probabilities` always `None`). Reading `pipeline.rs` surfaced a **third** — `min_dist` stays at holomap's default 0.1, because 0.0 regresses the corpus to 13 clusters / 45.2% noise. It is now in Global Constraints and called out in Task 2's failure diagnosis.
++
++**Not covered by any task, by design:** backend identity in persisted provenance. That belongs to the consumer, and lands with hydra-recall's `recall/Cluster` type in project B.
++
++**Type consistency.** `ClusterParams` / `ClusterResult` / `Clusterer` / `ClustererError` are defined once in Task 4 and used unchanged in Tasks 5, 6 and 9. Rust `Params` / `Request` / `Response` / `run_pipeline` keep their coda signatures throughout. The wasm export `reduce_and_cluster` is defined in Task 3 and consumed in Task 5 with matching arity and order.
+diff --git a/docs/superpowers/specs/2026-08-05-holomap-clusterer-wasm-design.md b/docs/superpowers/specs/2026-08-05-holomap-clusterer-wasm-design.md
+new file mode 100644
+index 0000000..9411ec2
+--- /dev/null
++++ b/docs/superpowers/specs/2026-08-05-holomap-clusterer-wasm-design.md
+@@ -0,0 +1,212 @@
++# `holomap-clusterer` — adopt the existing crate, ship both backends behind one interface
++
++**Date:** 2026-08-05 · **Status:** design · **Repo:** `mnmal-ai/holomap`
++
++## Goal
++
++Move the existing reduce→cluster crate into the holomap repo, rename and dual-license it, and publish an npm package exposing **one `Clusterer` interface with two backends** — a bundled wasm build for a clean install, and a subprocess adapter for operators who want native speed.
++
++Two consumers: `coda-dynamics` (today, via subprocess) and `hydra-recall` crystallisation (new).
++
++## What already exists
++
++**This spec's first draft was wrong.** It specified building a crate from scratch. Nearly all of it exists and is in production.
++
++### The Rust crate
++
++`coda/crates/coda-clusterer` v0.1.0 — `holomap 0.2` + `hdbscan 0.12` with `default-features = false, features = ["serial"]`, so rayon is disabled and no thread-pool non-determinism can enter. `cargo test -p coda-clusterer`: **6 passed, exit 0** (verified 2026-08-05).
++
++```rust
++pub const PROTOCOL_VERSION: u32 = 1;
++
++pub struct Params {
++    pub n_components: usize,     // 0 = skip reduction, cluster input directly
++    pub n_neighbors: usize,
++    pub min_cluster_size: usize,
++    pub seed: u64,
++}
++
++pub struct Request  { protocol_version: u32, vectors: Vec<Vec<f32>>, params: Params }
++pub struct Response { protocol_version: u32, assignments: Vec<i32>,
++                      probabilities: Option<Vec<f32>>, error: Option<String> }
++
++pub fn run_pipeline(req: &Request) -> Response;
++```
++
++Pipeline: L2-normalise → optional holomap reduction → HDBSCAN (`DistanceMetric::Euclidean`, valid post-normalisation). `main.rs` is a JSON-lines stdin/stdout loop; errors are per-line responses, never process aborts.
++
++Already repo-neutral: `protocol.rs` has zero coda/dynamics references, `pipeline.rs` has one, in a doc comment.
++
++### The TypeScript interface
++
++`coda/packages/dynamics/src/clusterer.ts` already defines the backend seam this design needs:
++
++```ts
++export interface ClusterParams { nComponents: number; nNeighbors: number;
++                                 minClusterSize: number; seed: number }
++export interface ClusterResult { assignments: readonly number[];
++                                 probabilities?: readonly number[] }
++export interface Clusterer {
++  cluster(vectors: readonly Float32Array[], params: ClusterParams): Promise<ClusterResult>;
++}
++export class SubprocessClusterer implements Clusterer { /* spawns argv, JSON-lines */ }
++export class ClustererError extends Error {}
++```
++
++The binding is config-driven — `CODA_DYNAMICS_CLUSTERER` argv, defaulting to the Rust binary — and **has already been swapped once**, from `clusterer.py` to the Rust binary on 2026-06-07. The pluggable-backend design is not speculative here: it is proven in production and has survived a real backend change.
++
++### Three behaviours that must survive the move
++
++**`min_samples` is deliberately unset.** The `hdbscan` crate then defaults it to `min_cluster_size`, matching sklearn's `HDBSCAN(min_cluster_size=5)`. The in-code comment records that setting it to `n_neighbors` collapsed the reference corpus from **36 clusters to 8**, and that the earlier wiring was a cross-binding inconsistency with `clusterer.py`. Hard-won, not an oversight.
++
++**`min_dist` stays at holomap's default 0.1 — not 0.0.** The Python baseline calls `UMAP(min_dist=0.0)`, so matching it looks like the obviously correct thing to do. It is not: the standalone gate measured 0.0 regressing the corpus to **13 clusters / 45.2% noise** (both figures sklearn-clustered, so compare them against that binding's 36 / 27.2%, not against this crate's 36 / 30.0%), because holomap's SGD schedule handles the zero-min-dist edge case differently from umap-learn's. This is the trap in the crate — the "consistency fix" that silently halves cluster yield.
++
++**`probabilities` is always `None`.** `hdbscan` 0.12's `.cluster()` returns labels only. The field exists for protocol forward-compatibility and is never populated. *(The first draft promised probabilities on the JS surface. It cannot deliver them.)*
++
++### Already proven — do not re-litigate
++
++Native quality on the real 799-row corpus (`coda-fixtures/2026-06-05-claude-corpus-799.tsv`, sha256 `d65077b8…`; 723 rows after excluding the 76 synthetic perf fixtures per MVD §5), at `n_components=10`, `n_neighbors=15`, `min_cluster_size=5`, `seed=42`:
++
++| Pipeline | Clusters | Noise | Source |
++|---|---|---|---|
++| holomap reduction → **sklearn** HDBSCAN | 36 | 27.2% | `coda/scripts/phase0-clusterer-spike/holomap_gate.py`, re-confirmed byte-identical on the holomap 0.2.0 bump (coda `6062a084`) |
++| holomap reduction → **Rust `hdbscan` 0.12** (this crate) | 36 | 30.0% | measured 2026-08-05 |
++
++**The widely-quoted "36 clusters / 27.2% noise" validated the REDUCTION, using a Python clusterer.** `holomap_gate.py` imports `from sklearn.cluster import HDBSCAN`. This crate clusters with the Rust `hdbscan` crate instead, so its noise fraction differs by ~3 points while the cluster count matches exactly. Both sit inside the MVD's 30–60 / 10–35% envelope. Quoting 27.2% as this pipeline's figure is a misattribution — the all-Rust baseline is **36 / 30.0%**, first recorded here.
++
++Confirmed independently 2026-08-05: holomap alone reduces those 723 rows (1024-d → 10-d, cosine, seed 42) in **2.39 s**; its own suite is 50/50 green; and both `holomap` 0.2.0 and `hdbscan` 0.12.0 compile clean to `wasm32-unknown-unknown` (exit 0, 19 s and 4.5 s), neither pulling a C dependency, BLAS, LAPACK, or OS entropy.
++
++## Scope
++
++1. **Move** `crates/coda-clusterer` → `holomap/crates/holomap-clusterer`; rename; relicense `Apache-2.0` → `MIT OR Apache-2.0`, matching holomap, `hdbscan` 0.12 and transitive `kdtree` 0.7.
++2. **Add a wasm binding** behind a `wasm` feature.
++3. **Publish `@mnmal-ai/holomap-clusterer`** — the `Clusterer` interface plus both backends.
++4. **Migrate coda** to the shared package, deleting its local crate and `SubprocessClusterer`.
++
++### Non-goals
++
++- **No behaviour change to `run_pipeline`.** The move is behaviour-preserving; the reference-corpus result is the regression check.
++- **No clustering policy.** This crate proposes assignments. Coda's MVD §4 governs consumers: *"concept identity cannot be re-derived by re-running a global clustering."*
++- **No hygiene filtering.** MVD §5 — synthetic fixtures out-dense lived experience. Callers filter before calling.
++- **No generality added to `holomap` itself.** Its identity is "small, auditable, deterministic — generality is resisted on purpose."
++
++## Repo layout
++
++holomap's root `Cargo.toml` is a single-package manifest with no `[workspace]` today. This adds one:
++
++```
++holomap/
++  Cargo.toml                     # gains [workspace] members
++  src/                           # the holomap crate, unchanged
++  crates/holomap-clusterer/
++    src/{lib,pipeline,protocol,main}.rs
++    src/wasm.rs                  # new, behind the `wasm` feature
++    tests/protocol.rs
++  npm/                           # @mnmal-ai/holomap-clusterer
++    src/{index,wasm-clusterer,subprocess-clusterer}.ts
++```
++
++holomap's publish whitelist (`include = ["src/**", "examples/**", …]`) already excludes sibling directories, so its crates.io artifact is unaffected.
++
++**History preservation:** move via `git format-patch` / `git am` so authorship survives. A clean add is acceptable if that proves awkward across unrelated histories, provided the commit message names the origin commit in `mnmal-ai/coda`.
++
++## The npm package
++
++### Surface
++
++The `Clusterer` interface, `ClusterParams`, `ClusterResult` and `ClustererError` move verbatim from `coda/packages/dynamics/src/clusterer.ts`. **The signature does not change** — including `vectors: readonly Float32Array[]` rather than a flat array.
++
++*(The first draft proposed a flat `Float32Array`, arguing it avoids marshalling. Rejected: the interface is in production, and flattening inside the wasm backend costs one copy that is negligible beside an O(N²·d) kNN. Changing a working consumer's interface for a micro-optimisation is the wrong trade.)*
++
++```ts
++export class WasmClusterer implements Clusterer { }        // bundled wasm, default
++export class SubprocessClusterer implements Clusterer { }  // spawns a native binary
++```
++
++### `WasmClusterer`
++
++`src/wasm.rs` sits behind a `wasm` feature so the native crate and sidecar are untouched. It converts incoming rows into the `Vec<Vec<f32>>` that `run_pipeline` takes, calls it unchanged, and translates the response.
++
++**`run_pipeline` is not refactored for this.** One `Vec` allocation per row — 723 on the reference corpus, 50k at the ceiling — is not the bottleneck beside the quadratic kNN. A flat-input core is a fair later optimisation if profiling justifies it; doing it now means changing tested production code for a hypothetical.
++
++**Build with `-C target-feature=+simd128` — but not for the reason originally given.** The rationale here was that native LLVM auto-vectorises `exact_knn`'s scalar distance loop to AVX and wasm would not without the flag, so omitting it would widen the gap. **Measured 2026-08-05, that is not observable on this workload.** With the wasm module warmed before timing, n=723 is identical to three significant figures with and without the flag (2.4 s both), and n=10k differs by ~2.2% single-shot — noise, not signal.
++
++The flag stays because it is free and may matter on other hosts or larger inputs, but no performance claim should rest on it. The real, measured cost of choosing wasm over the subprocess is below.
++
++### Measured backend cost
++
++Same host, same corpus shape, wasm warmed before timing; n=723 is a median of three runs, n=10k single-shot:
++
++| Backend | n=723 | n=10,000 |
++|---|---|---|
++| `WasmClusterer` | 2.4 s | 53.6 s |
++| `SubprocessClusterer` | 1.3 s | 30.5 s |
++
++**Choosing wasm costs roughly 1.8×.** Both clear the 300 s gate with ~5.6× headroom at 10k. For context, coda's real corpus is 723 rows and 10k is estimated at roughly a year of accumulation — so at realistic sizes the absolute difference is about a second.
++
++**Errors throw.** `Response.error` is in-band by design for the sidecar's per-line contract, but a JS method resolving to a result object carrying an error field invites callers to ignore it. `WasmClusterer` throws `ClustererError` with the crate's message, matching what `SubprocessClusterer` already does.
++
++**Row guard.** Reject input above `MAX_ROWS = 50_000` — holomap's honest envelope, set by its exact O(N²·d) kNN. wasm-only: a blocked worker thread is a wasm-specific hazard and the subprocess path is unchanged. A constant, not a parameter — a configurable ceiling lets a caller opt into an unbounded run with no way to know what they asked for.
++
++**No top-level side effects.** Initialisation is explicit or lazy so the module can be imported inside a `worker_threads` Worker. Consumers should run it in one: the batch is CPU-bound for tens of seconds and must not block an event loop serving live traffic.
++
++Built with `wasm-pack build --target nodejs`, wrapped in a thin ESM module. The package resolves its own `.wasm` asset relative to its own `dist/`, so consumers never handle asset paths.
++
++### Choosing a backend
++
++Consumers select per their own config conventions. For hydra-recall that is a `oneOf` discriminated union on `kind`, matching the pattern its config schema already uses for the embedder (`off | fake | ollama | onnx`):
++
++```jsonc
++"clusterer": { "kind": "wasm" }                              // default
++"clusterer": { "kind": "subprocess", "argv": ["/path/to/holomap-clusterer"] }
++```
++
++wasm is the default because hydra's distribution model is npm-into-a-runtime-dir — `npx hydra init`, plugins discovered by scanning `node_modules`, releases shipped by moving version pins and restarting one systemd unit. A `.wasm` is an ordinary package asset that works on every platform Node runs on. The subprocess backend is the opt-in for operators who want native speed and will accept per-platform binary management.
++
++### Backend identity is provenance, not a footnote
++
++**A consumer persisting cluster results must record which backend and version produced them.**
++
++The two backends will not necessarily agree byte-for-byte, and that is not a defect to engineer away — holomap's own README promises only *structural* identity cross-platform ("floats may differ at ULP level"), so native-on-Linux and native-on-macOS may already differ. HDBSCAN is a density algorithm, so small coordinate perturbations can flip boundary points.
++
++Demanding that wasm match native more tightly than native matches itself would be an unfair gate. The honest answer is to make the backend visible: a stored clustering recording `{ backend, version, seed, params }` turns a backend switch into an observable event rather than a silent reprocessing. For hydra-recall this rides the `recall/Cluster` provenance the design already commits to.
++
++## Verification gates
++
++Native pipeline quality is already proven, so these are wasm-specific plus a move regression.
++
++| # | Gate | Bar | Kind |
++|---|---|---|---|
++| 1 | **Move regression** | `holomap-clusterer` lands inside 30–60 clusters / 10–35% noise on the 723-row filtered corpus at `min_cluster_size=5`, `n_components=10`, `n_neighbors=15`, `seed=42`. The all-Rust baseline is 36 / 30.0% — not the sklearn-measured 27.2% | hard |
++| 2 | **wasm self-determinism** | Two wasm runs, same input and params → byte-identical `assignments` | hard |
++| 3 | **wasm/native agreement** | wasm diverges from native by no more than native diverges from native across platforms, measured against holomap's existing cross-platform parity suite. Report ARI and cluster-count delta | hard |
++| 4 | **Node ESM + worker load** | Imports and runs to completion inside a `worker_threads` Worker under Node ESM, result matching a main-thread run | hard |
++| 5 | **Wall clock and peak RSS** | Measured at 723 rows and 10k, with and without `+simd128`. Fails only if 10k exceeds 300 s — roughly 10× holomap's native ~26 s — which would make the batch impractical | hard |
++
++Gate 5 measures both flag settings deliberately: it quantifies the auto-vectorisation gap rather than assuming it, and that number is what any future "should we just use the sidecar" conversation should be argued from.
++
++**If a hard gate fails, the wasm backend is dropped and nothing else changes.** The subprocess backend already exists and is in production. Neither consumer is blocked on the wasm work; it only decides whether they ship as a pure npm install or ask operators to run a second process.
++
++## Migrating coda
++
++Coda is mid-flight and does not need to stay green through this, so the sequencing is direct rather than defensive:
++
++1. Land the crate in holomap under its new name and license; publish to crates.io via holomap's existing trusted-publishing pipeline.
++2. Publish `@mnmal-ai/holomap-clusterer` with both backends.
++3. Point `coda-dynamics` at the package; delete `crates/coda-clusterer` and the local `SubprocessClusterer`. `CODA_DYNAMICS_CLUSTERER` keeps working — it becomes the argv for the shared `SubprocessClusterer`.
++4. Re-run coda's dynamics gates to confirm the move changed nothing.
++
++**Coda is also the proving ground for the wasm backend.** It has the `Clusterer` seam, the reference corpus, and existing gates — so swapping in `WasmClusterer` there exercises the binding against a real workload with a known-good result to compare against, before hydra-recall depends on it. Cheaper to find a problem there than in the substrate.
++
++## Testing
++
++- **Existing suite moves intact.** `tests/protocol.rs` — 6 tests — comes across unchanged. Any edit to it during the move signals the move was not behaviour-preserving.
++- **Determinism property test.** Mirror holomap's proptest invariant: randomised seeds, shapes and params, asserting byte-identity across a double run.
++- **Fixture regression.** The filtered 723-row corpus at a pinned seed, asserting cluster count and noise fraction. Guards against a dependency bump silently changing pipeline behaviour.
++- **Backend equivalence.** Both backends over the same fixture, asserting agreement within gate 3's bar. This is the test that keeps dual-path honest.
++- **Worker smoke test.** Import and run inside a `worker_threads` Worker.
++- **Cross-platform CI.** holomap's existing Linux/macOS/Windows matrix extends to the wasm build and the Node-side tests.
++
++## What this unblocks
++
++`hydra-recall` crystallisation: `POST /hydra/crystallise` writing `recall/Cluster` rows with `derivedFrom` provenance edges to source rows, on a caller's schedule. Hydra context store: cross-cutting Decision `ef9a4584` (mechanism/policy split), Decision `7c643598` (this crate's home), Todo `f403fbca` (the recall primitive), Todo `0caa6281` (this move).
+diff --git a/npm/bench/measure.ts b/npm/bench/measure.ts
+new file mode 100644
+index 0000000..75f9537
+--- /dev/null
++++ b/npm/bench/measure.ts
+@@ -0,0 +1,99 @@
++/**
++ * Gate 5. Wall clock for both backends.
++ *
++ * Run with the wasm built both ways to quantify the auto-vectorisation gap:
++ *   pnpm build:wasm && pnpm tsx bench/measure.ts          # with +simd128
++ *   (rebuild without RUSTFLAGS, re-run)                   # without
++ *
++ * Native reference from holomap's README: ~3 s at 1k x 50-d, ~26 s at 10k.
++ * The gate fails only if 10k exceeds 300 s.
++ *
++ * n=723 reports the median of 3 timed runs: single-shot noise at this size
++ * is the same order of magnitude as the deltas this harness exists to
++ * detect (e.g. the +simd128 gap), so one run can't support a claim about it.
++ * n=10000 is single-shot, and the output says so explicitly — repeating a
++ * 10k run 3x costs several extra minutes per backend per build, so this
++ * harness does not denoise it. Read a 10k delta as directional, not exact.
++ *
++ * RSS is not reported. process.memoryUsage().rss only ever reflects this
++ * (parent) process. That's a reasonable proxy for the wasm backend, which
++ * computes in-process, but the subprocess backend's actual work happens in
++ * a spawned child this process never samples — a "subprocess RSS" number
++ * here would describe the wrong process's memory, and even the wasm number
++ * would only be a post-completion snapshot, not the peak the old docstring
++ * claimed. A wrong or partial number is worse than none, so this harness
++ * measures wall-clock only.
++ */
++import { SubprocessClusterer, WasmClusterer } from '../src/index.js';
++import type { Clusterer, ClusterParams } from '../src/types.js';
++
++const BIN = new URL('../../target/release/holomap-clusterer', import.meta.url).pathname;
++
++function synthetic(n: number, dims: number): Float32Array[] {
++  let state = 7n;
++  const next = () => {
++    state = (state * 6364136223846793005n + 1442695040888963407n) & 0xffffffffffffffffn;
++    return Number(state >> 33n) / 0xffffffff - 0.5;
++  };
++  return Array.from({ length: n }, (_, i) => {
++    const v = new Float32Array(dims);
++    v[i % dims] = 10.0;
++    for (let j = 0; j < dims; j++) v[j] += next() * 0.5;
++    return v;
++  });
++}
++
++async function timeOnce(
++  clusterer: Clusterer,
++  vectors: Float32Array[],
++  params: ClusterParams
++): Promise<number> {
++  const t0 = performance.now();
++  await clusterer.cluster(vectors, params);
++  return (performance.now() - t0) / 1000;
++}
++
++function median(xs: readonly number[]): number {
++  const sorted = [...xs].sort((a, b) => a - b);
++  return sorted[Math.floor(sorted.length / 2)]!;
++}
++
++const PARAMS = { nComponents: 10, nNeighbors: 15, minClusterSize: 5, seed: 42 };
++
++// Warm the wasm module OUTSIDE any timed region, before the loop below even
++// starts. wasm-clusterer.ts lazily require()s the glue on first use, and the
++// glue's top-level code does a synchronous readFileSync + WebAssembly.Module
++// compile + instantiate right there — Node then caches that module process-
++// wide, so it only ever happens once per process. Left unwarmed, that
++// one-time cost lands entirely on whichever timed call happens to run first
++// (with the loop order below, always "wasm n=723"), inflating it by a fixed
++// amount that swamps the small deltas (e.g. simd128 vs. not) this harness
++// exists to detect.
++{
++  const warmupVectors = synthetic(10, 4);
++  const warmupParams: ClusterParams = { nComponents: 2, nNeighbors: 3, minClusterSize: 2, seed: 1 };
++  await new WasmClusterer().cluster(warmupVectors, warmupParams);
++}
++
++for (const n of [723, 10_000]) {
++  const vectors = synthetic(n, 50);
++  for (const [name, clusterer] of [
++    ['wasm', new WasmClusterer()],
++    ['subprocess', new SubprocessClusterer([BIN])]
++  ] as const) {
++    if (n === 10_000) {
++      const secs = await timeOnce(clusterer, vectors, PARAMS);
++      console.log(`${name} n=${n} wall=${secs.toFixed(1)}s (single-shot)`);
++    } else {
++      const reps = [
++        await timeOnce(clusterer, vectors, PARAMS),
++        await timeOnce(clusterer, vectors, PARAMS),
++        await timeOnce(clusterer, vectors, PARAMS)
++      ];
++      console.log(
++        `${name} n=${n} wall=${median(reps).toFixed(1)}s ` +
++          `(median of 3: ${reps.map((s) => s.toFixed(1)).join('s, ')}s)`
++      );
++    }
++  }
++}
+diff --git a/npm/package.json b/npm/package.json
+new file mode 100644
+index 0000000..1efdfe9
+--- /dev/null
++++ b/npm/package.json
+@@ -0,0 +1,26 @@
++{
++  "name": "@mnmal-ai/holomap-clusterer",
++  "version": "0.1.0",
++  "description": "Deterministic reduce→cluster: holomap UMAP + HDBSCAN. One Clusterer interface, wasm and subprocess backends.",
++  "license": "MIT OR Apache-2.0",
++  "repository": { "type": "git", "url": "git+https://github.com/mnmal-ai/holomap.git", "directory": "npm" },
++  "type": "module",
++  "main": "./dist/index.js",
++  "types": "./dist/index.d.ts",
++  "exports": { ".": { "import": "./dist/index.js", "types": "./dist/index.d.ts" } },
++  "files": ["dist", "wasm"],
++  "scripts": {
++    "build": "tsc -p tsconfig.json",
++    "build:wasm": "bash ../scripts/build-wasm.sh",
++    "prepublishOnly": "bash ../scripts/build-wasm.sh",
++    "pretest": "test -f wasm/holomap_clusterer.js || { echo 'wasm artifact missing — run: pnpm build:wasm'; exit 1; }",
++    "test": "vitest run",
++    "check-types": "tsc -p tsconfig.json --noEmit"
++  },
++  "devDependencies": {
++    "typescript": "^5.7.0",
++    "vitest": "^3.0.0",
++    "@types/node": "^22.0.0",
++    "tsx": "^4.19.0"
++  }
++}
+diff --git a/npm/pnpm-lock.yaml b/npm/pnpm-lock.yaml
+new file mode 100644
+index 0000000..3baccd6
+--- /dev/null
++++ b/npm/pnpm-lock.yaml
+@@ -0,0 +1,1050 @@
++lockfileVersion: '9.0'
++
++settings:
++  autoInstallPeers: true
++  excludeLinksFromLockfile: false
++
++importers:
++
++  .:
++    devDependencies:
++      '@types/node':
++        specifier: ^22.0.0
++        version: 22.20.1
++      tsx:
++        specifier: ^4.19.0
++        version: 4.23.5
++      typescript:
++        specifier: ^5.7.0
++        version: 5.9.3
++      vitest:
++        specifier: ^3.0.0
++        version: 3.2.7(@types/node@22.20.1)(tsx@4.23.5)
++
++packages:
++
++  '@esbuild/aix-ppc64@0.28.1':
++    resolution: {integrity: sha512-Svl7tq8k/08+p6CXPpRjQ1fKX+1odH/BQbb48fV6fj3CWHhsoIOoY87w1oHXm0qEpkIK3ZfVgp0hed3XBXzXMQ==}
++    engines: {node: '>=18'}
++    cpu: [ppc64]
++    os: [aix]
++
++  '@esbuild/android-arm64@0.28.1':
++    resolution: {integrity: sha512-34EGEbCIAgosYz6goLcopX6Mo7NyGv9tfwEM2/7Ce2VcVRk568iSvniGWcUXIy7wEDR1wzolcxcriFVrWYcwBg==}
++    engines: {node: '>=18'}
++    cpu: [arm64]
++    os: [android]
++
++  '@esbuild/android-arm@0.28.1':
++    resolution: {integrity: sha512-0k2F129Xdio1TdJfzJ8sy1Q47vUD2NnwdhiAf7drUN1EBTfPf4hsFCtmMgu/6m8JSzsBrlmVjudMBQqOfG8usQ==}
++    engines: {node: '>=18'}
++    cpu: [arm]
++    os: [android]
++
++  '@esbuild/android-x64@0.28.1':
++    resolution: {integrity: sha512-dbwY7ltSMDWsRatcRpCnES4F+im88OCUgGZjy52shC7GqHRE/cYlxNbB4Z4UpJswpcc4Qxd2oE/ufM0p61IKng==}
++    engines: {node: '>=18'}
++    cpu: [x64]
++    os: [android]
++
++  '@esbuild/darwin-arm64@0.28.1':
++    resolution: {integrity: sha512-TZbWkQY7kvTAXbXUT7uVACR5cMHsDiSz9z7ZKAX/RTq/WJEk3QyRr0wZpNhBDX+/0CtdqUIJlOiodQcta6tY3Q==}
++    engines: {node: '>=18'}
++    cpu: [arm64]
++    os: [darwin]
++
++  '@esbuild/darwin-x64@0.28.1':
++    resolution: {integrity: sha512-zfdzgK9ACBNZLI/CyHTOx81SyNbM6YXn7rxSgX97VjyiPl9W1i4Ka4fgKECEoFCKGpvBj5qArWIGgQjOwkgskQ==}
++    engines: {node: '>=18'}
++    cpu: [x64]
++    os: [darwin]
++
++  '@esbuild/freebsd-arm64@0.28.1':
++    resolution: {integrity: sha512-wG2EA8ENdEI0qhkSZMjfqrdY+ziCYCPMmtZjjIwOmXFjmyzEHn+UUxk5of+SYsjtfs3VpnlC7QLzSI5hY/rOAw==}
++    engines: {node: '>=18'}
++    cpu: [arm64]
++    os: [freebsd]
++
++  '@esbuild/freebsd-x64@0.28.1':
++    resolution: {integrity: sha512-i7dZ9vQgnvSCzi/rYCXNgtF/U+eKZNJBzu3eTQbRgHnM7tNSizLOkRFAl3qzVc/Op/u5YkHHa4pf/3DOYHthLQ==}
++    engines: {node: '>=18'}
++    cpu: [x64]
++    os: [freebsd]
++
++  '@esbuild/linux-arm64@0.28.1':
++    resolution: {integrity: sha512-yHs+0uc8+nvEAfAfxrWQKK5peSNzBc4PegcMO0EJ2hT71uA7vB8Ihg2e77R2P7SG5uYjPbHlLLmve4LLLRCf0g==}
++    engines: {node: '>=18'}
++    cpu: [arm64]
++    os: [linux]
++
++  '@esbuild/linux-arm@0.28.1':
++    resolution: {integrity: sha512-qVXBOHQS+d5Y722GwJzJUtOLlX7km3CraOaGormF1pDtPd2C/l1SHRPgjLunLGe51Sh5YYWKMFDyV4SxgMQYTQ==}
++    engines: {node: '>=18'}
++    cpu: [arm]
++    os: [linux]
++
++  '@esbuild/linux-ia32@0.28.1':
++    resolution: {integrity: sha512-d1z4ZuP0ajrfz/FhGT4vv278rX8KnPPJx8i5+AtK7TYbx9Le9F1hyzurZpkEyjkGa9dUGhQow4C1NmeGvqxN2w==}
++    engines: {node: '>=18'}
++    cpu: [ia32]
++    os: [linux]
++
++  '@esbuild/linux-loong64@0.28.1':
++    resolution: {integrity: sha512-M5sRjUVZrkm1OAPR3dlOYzNmN+loZKGVi1VUQGrwuqLcbR6qeAz+famMhjASeH3YVKvZz+zT1jlh/keC3Rj/lg==}
++    engines: {node: '>=18'}
++    cpu: [loong64]
++    os: [linux]
++
++  '@esbuild/linux-mips64el@0.28.1':
++    resolution: {integrity: sha512-mRObBZeHh2OxcBFPWE/FjylkRgZdYuiTR3vaTozquCGOH14iP9oN4x4Ge81CoIDYQrXmIxpFumJBu5MtZpnQJQ==}
++    engines: {node: '>=18'}
++    cpu: [mips64el]
++    os: [linux]
++
++  '@esbuild/linux-ppc64@0.28.1':
++    resolution: {integrity: sha512-slScBsMAb3GFDcdrCgLwZtPYRoH2H/youv10QiZyRjmsP48fznoveWytSgCI/R0ZcUgpc0ZhIUEx6LHts8yrfQ==}
++    engines: {node: '>=18'}
++    cpu: [ppc64]
++    os: [linux]
++
++  '@esbuild/linux-riscv64@0.28.1':
++    resolution: {integrity: sha512-kw0owk1o0GFETUJyW0jc0G4Yzs0BHZn0JDZ8JRT088vjJYX777BAs1fDGxAC+q831qOs2DTC96mNsG2opdfyyQ==}
++    engines: {node: '>=18'}
++    cpu: [riscv64]
++    os: [linux]
++
++  '@esbuild/linux-s390x@0.28.1':
++    resolution: {integrity: sha512-/lAIjX8aYFRByhh6L5rYtPEDRqa9de/4V/juOXcta5frjvzXO4/sqEtyytse0g3zZFuWu5cDN0MkLz2qRDD2Ag==}
++    engines: {node: '>=18'}
++    cpu: [s390x]
++    os: [linux]
++
++  '@esbuild/linux-x64@0.28.1':
++    resolution: {integrity: sha512-u/anNYF2mmVOEDwLtnQ1wOr3EZ9sTNGLWrsYGYwHWzGA3Si84IOkHXlbWTD1NB+9/1lcnweYKO54uhxZydNzfA==}
++    engines: {node: '>=18'}
++    cpu: [x64]
++    os: [linux]
++
++  '@esbuild/netbsd-arm64@0.28.1':
++    resolution: {integrity: sha512-oks0DYbLwWMmaakTsCb+zL4E+aHRVLom9IJZOAthMQEPiQmydXHkziYEsGYRx0uNV/IjEKGAV941JzH02pflqw==}
++    engines: {node: '>=18'}
++    cpu: [arm64]
++    os: [netbsd]
++
++  '@esbuild/netbsd-x64@0.28.1':
++    resolution: {integrity: sha512-aeL6lAnN89Hz43Mlh1G8ARasbuoYvSITDEx0tHh5b7jJnHcssqgjy9Yx430GDpmCa6OyrKoS0aNRjKundRizGg==}
++    engines: {node: '>=18'}
++    cpu: [x64]
++    os: [netbsd]
++
++  '@esbuild/openbsd-arm64@0.28.1':
++    resolution: {integrity: sha512-MEFJe5C3R8pwXdZ5Y21oo6m7ePiS0d9pWucn99O/wvyJZChoIQKrQDxKrGeW8F5+T0okTHesAmDeiHDTIq0V/Q==}
++    engines: {node: '>=18'}
++    cpu: [arm64]
++    os: [openbsd]
++
++  '@esbuild/openbsd-x64@0.28.1':
++    resolution: {integrity: sha512-i/ZLIOafE0Z8cI/XANJAixoJL/uRAoS2xOA3rb0xN+KK0K177cMAsQYkzHtBrtMXAKuAc7HGgcWiZ/sRC1Nxgw==}
++    engines: {node: '>=18'}
++    cpu: [x64]
++    os: [openbsd]
++
++  '@esbuild/openharmony-arm64@0.28.1':
++    resolution: {integrity: sha512-ge+Z7EXFNt2BO1oAMsVpiQ8EwndV9i1xXerAeTIK7AtPs3bKFXQM7nlRxDSIUIMeueR1CNXxqztLzdNeReKBJg==}
++    engines: {node: '>=18'}
++    cpu: [arm64]
++    os: [openharmony]
++
++  '@esbuild/sunos-x64@0.28.1':
++    resolution: {integrity: sha512-BEjgtECkL3vY+SaSQ6nzVfiALUeFxpawyp8Jmf5PtYhf1Ug40N1h/hxlhts+f1FvSvarEigdxS3BlSMI2PJLcQ==}
++    engines: {node: '>=18'}
++    cpu: [x64]
++    os: [sunos]
++
++  '@esbuild/win32-arm64@0.28.1':
++    resolution: {integrity: sha512-lCv9eK/H6ZJWbE7bh2nw54CZ9M2nupBxJcTsdk/QQnWkdSjKGuxmmH8/GWrlT1eMmZfn4dGcCjRte397WqfQXA==}
++    engines: {node: '>=18'}
++    cpu: [arm64]
++    os: [win32]
++
++  '@esbuild/win32-ia32@0.28.1':
++    resolution: {integrity: sha512-zvb/mB2bSCoJOpoCBgYKKpX6YM6mJBlBUVUtVj41DlZJVEB6/0CKlRYxP5wWl1C1ILiCoAU5wZZ4q1P3qeS6Eg==}
++    engines: {node: '>=18'}
++    cpu: [ia32]
++    os: [win32]
++
++  '@esbuild/win32-x64@0.28.1':
++    resolution: {integrity: sha512-bm4Mowrv+GXMlpWX++EcXw/iLyd1o3+bJkC2DkWXYVvgZCqD/bSj9ctZeAMC3cIxgjRVR2Dufaiu4YPxr5gW1A==}
++    engines: {node: '>=18'}
++    cpu: [x64]
++    os: [win32]
++
++  '@jridgewell/sourcemap-codec@1.5.5':
++    resolution: {integrity: sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==}
++
++  '@napi-rs/lzma-linux-x64-gnu@1.5.1':
++    resolution: {integrity: sha512-oTXEIha4SsuXdTA4Iyskj0kpdx2yVXdhd75c2v3xGrHFfVMsbhTPZU/nMPL4sWKo4pBHm3aucLaqGlF696dTyQ==}
++    engines: {node: ^22.20 || ^24.12 || >=25}
++    cpu: [x64]
++    os: [linux]
++    libc: [glibc]
++
++  '@rollup/rollup-android-arm-eabi@4.62.4':
++    resolution: {integrity: sha512-RrPokAb7dmbxFoeO3TloqHyOjgye8RkBhSqmp4aJMIex4c9r46ZstPnleDQOq1t46VOVjwIuwNogIqbodV1Vvg==}
++    cpu: [arm]
++    os: [android]
++
++  '@rollup/rollup-android-arm64@4.62.4':
++    resolution: {integrity: sha512-JKuJc+pnpks2pjy7L/N3v/cAkZxYlnmuZoD840ldbMI5KDbC4iO9NKwPKYdjYFCMAIIlBzYSFHxIJVYzRo2/8A==}
++    cpu: [arm64]
++    os: [android]
++
++  '@rollup/rollup-darwin-arm64@4.62.4':
++    resolution: {integrity: sha512-krw5uS2STmvJ02x0uTXHbqQNuz+9eZ1iw+qXk9dmW2gvV4jV7O2hEoOnuhFrpOPiel1mBFtqbxYZZtC46hXLOw==}
++    cpu: [arm64]
++    os: [darwin]
++
++  '@rollup/rollup-darwin-x64@4.62.4':
++    resolution: {integrity: sha512-wsTxtgApb4PrOsNJIm0FZ1h3WvCC+k9uxLJ4ad75hgoS4NiRes2SoJFlDAyMwiUY8IssDqGcHbXuN0sx1tfF1A==}
++    cpu: [x64]
++    os: [darwin]
++
++  '@rollup/rollup-freebsd-arm64@4.62.4':
++    resolution: {integrity: sha512-GUOnQlyZe3yAXhWOtOMsn5Qkrv5E5mZXa0thbARWi5Ei2szlVXJFQhddZ4HbAzh8q92w5twp+CQvs/eFanz9YQ==}
++    cpu: [arm64]
++    os: [freebsd]
++
++  '@rollup/rollup-freebsd-x64@4.62.4':
++    resolution: {integrity: sha512-/Y7f3QuxjzPKsjA/rfEDa3+0vXqyjmJ50Ln8dPpCmWkKTrUoWHG1cWhTqaAMLob2m2nESWuC7yGrREz019Ztqg==}
++    cpu: [x64]
++    os: [freebsd]
++
++  '@rollup/rollup-linux-arm-gnueabihf@4.62.4':
++    resolution: {integrity: sha512-81wiiX3v7aqy+T+bT61TJ78yJjRquqFFTTbAPt08imfQQzkPIW8t6aJbkTagtCCrXMNc9D66+geqlK7ydLPNqA==}
++    cpu: [arm]
++    os: [linux]
++    libc: [glibc]
++
++  '@rollup/rollup-linux-arm-musleabihf@4.62.4':
++    resolution: {integrity: sha512-9kmDIvNZqdoHOBZgNtpTBeLWYO/LVipM3H/j62P8848/l/VPEQL6N3uxU9pvP1oZAsXyC2MEnFP3ovRjo7WYNQ==}
++    cpu: [arm]
++    os: [linux]
++    libc: [musl]
++
++  '@rollup/rollup-linux-arm64-gnu@4.62.4':
++    resolution: {integrity: sha512-CcnXHWnXg69g+DX5VWL3FHts3qMRN2uVEHX+BZvGLdd07/gXkn3ePjYtO1LDJvxkGKVHMclKBRa1QUTH+6toYQ==}
++    cpu: [arm64]
++    os: [linux]
++    libc: [glibc]
++
++  '@rollup/rollup-linux-arm64-musl@4.62.4':
++    resolution: {integrity: sha512-iFOibiHnTRuhrWLlRsOQFdZJJIa7S8OwkneJr4ocALP16u5yk6lWLINFwhHaEqBFMsKDUZofLkGos7+CPzGB3g==}
++    cpu: [arm64]
++    os: [linux]
++    libc: [musl]
++
++  '@rollup/rollup-linux-loong64-gnu@4.62.4':
++    resolution: {integrity: sha512-XnWYMI7euHlb5a871xPja+Gm7DRCFU+FGRrtS2sMq9N8FvqtpagUy6gD4YOemC5MRk9xbh8+jYMEJbigFQwsgA==}
++    cpu: [loong64]
++    os: [linux]
++    libc: [glibc]
++
++  '@rollup/rollup-linux-loong64-musl@4.62.4':
++    resolution: {integrity: sha512-qGDAlO0U8xedCcsdRm9oaoQY8DAx/QT7uIxJWhCdx0ceIWX783UC9QSYkdpzAe29wNiVfp24+bZdQmn49o45SQ==}
++    cpu: [loong64]
++    os: [linux]
++    libc: [musl]
++
++  '@rollup/rollup-linux-ppc64-gnu@4.62.4':
++    resolution: {integrity: sha512-ru4H6ezD7ysA5EiEK6qkkaEb4modH8CTej6kUy/gQi20u3kB3G7Zn8snXXkeJSCOFKG/rbPPtM/+9Wgas1961w==}
++    cpu: [ppc64]
++    os: [linux]
++    libc: [glibc]
++
++  '@rollup/rollup-linux-ppc64-musl@4.62.4':
++    resolution: {integrity: sha512-2W4MO5WQVJnbJaZdvDb9rhBDuFU1nKIepPFpJUBsTh2k1YY2g+ODViaWuyOAjQ5cOP7NvrvLzt3wvHOoiAvc7w==}
++    cpu: [ppc64]
++    os: [linux]
++    libc: [musl]
++
++  '@rollup/rollup-linux-riscv64-gnu@4.62.4':
++    resolution: {integrity: sha512-+fxjfuoAmVMCYV5QyjoIpu0cp5DOiOTeqYFk1AVaxGr+/ravWLX89XfQmptsoWcaVy/TGf2hexzbUOrCQIL1CQ==}
++    cpu: [riscv64]
++    os: [linux]
++    libc: [glibc]
++
++  '@rollup/rollup-linux-riscv64-musl@4.62.4':
++    resolution: {integrity: sha512-jTn8JfHGL4djjFxPuM06LmNUJDsst2jeVlsd9OmIH6zc5sC9K6rIuO4YajXatLUpBmBKl6b35ro1QZocLi+tcA==}
++    cpu: [riscv64]
++    os: [linux]
++    libc: [musl]
++
++  '@rollup/rollup-linux-s390x-gnu@4.62.4':
++    resolution: {integrity: sha512-oCJCJL4pXsoDcP2QZ+JVlPTIRc6266zsIaeJJsWImmF7HO0W8nb6HuSgZlMWxJwaPf8ehbSw8yo0EUw925hKsA==}
++    cpu: [s390x]
++    os: [linux]
++    libc: [glibc]
++
++  '@rollup/rollup-linux-x64-gnu@4.62.4':
++    resolution: {integrity: sha512-W69hukhZ3KKNRCaMIEzKvcFye42hh0FE1+YoYaf5+Ikacuftoco6yO/xouz0hc5d5W/s3yBro5jRiuEE/Q5vUw==}
++    cpu: [x64]
++    os: [linux]
++    libc: [glibc]
++
++  '@rollup/rollup-linux-x64-musl@4.62.4':
++    resolution: {integrity: sha512-qiXbGG2jkjXhzXpsFZSR2Xpb8DN/UaxYsbb/STbuR/6fpaDgRmmaq1B/LmtF2wQFOFOSsK2jdE0RZ3a0zHn4QA==}
++    cpu: [x64]
++    os: [linux]
++    libc: [musl]
++
++  '@rollup/rollup-openbsd-x64@4.62.4':
++    resolution: {integrity: sha512-nWeM//hxv8mIo6jD7Hu4o48DVmV9pbV6gsKaWU+4NFyqHoPKwrkRiZGLKUhOBk8qNmDmpwFtPKg80Bo/Tn4xiQ==}
++    cpu: [x64]
++    os: [openbsd]
++
++  '@rollup/rollup-openharmony-arm64@4.62.4':
++    resolution: {integrity: sha512-s62SQ/vgsRSvMwDkOEfTqfgASF0f26ZNaQuTA6Aok5lrikf89yI2W0gFHvZb2Jpgc6N8JnOKZgCK2iciO3CsxQ==}
++    cpu: [arm64]
++    os: [openharmony]
++
++  '@rollup/rollup-win32-arm64-msvc@4.62.4':
++    resolution: {integrity: sha512-J6wGf8TVGbXJq+HH+ttTvrcfNKPbuZecV6KT1B8I18BC5IURUh5kl4Yl5OEP5eFIUoI5BWxCsyYMhFsDx8kekw==}
++    cpu: [arm64]
++    os: [win32]
++
++  '@rollup/rollup-win32-ia32-msvc@4.62.4':
++    resolution: {integrity: sha512-zmfrQd/0wu6oJs8Vq8KwY/YtsKSsLtKe/HwAP4Wqy8LhWjeT55fHRAkOhYQ12wI3ayS4Tt12d5CDRD7N96SAYQ==}
++    cpu: [ia32]
++    os: [win32]
++
++  '@rollup/rollup-win32-x64-gnu@4.62.4':
++    resolution: {integrity: sha512-qPzHqdj9rfUD+w79dtE07zi/kFwKyCJqplp5K5ygeLTp7jLpAoc16OAH39HSmRC9UpozaecsleI8uAdEj6v2yw==}
++    cpu: [x64]
++    os: [win32]
++
++  '@rollup/rollup-win32-x64-msvc@4.62.4':
++    resolution: {integrity: sha512-zD6NdeWEByGE9QF9vCrlJ5YQB4oq9q91kPZS37Jwj5hOkvR1lTBSpsKhKDw4IJtbQ35LsTS1HD9DZYGKIshU1Q==}
++    cpu: [x64]
++    os: [win32]
++
++  '@types/chai@5.2.3':
++    resolution: {integrity: sha512-Mw558oeA9fFbv65/y4mHtXDs9bPnFMZAL/jxdPFUpOHHIXX91mcgEHbS5Lahr+pwZFR8A7GQleRWeI6cGFC2UA==}
++
++  '@types/deep-eql@4.0.2':
++    resolution: {integrity: sha512-c9h9dVVMigMPc4bwTvC5dxqtqJZwQPePsWjPlpSOnojbor6pGqdk541lfA7AqFQr5pB1BRdq0juY9db81BwyFw==}
++
++  '@types/estree@1.0.9':
++    resolution: {integrity: sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg==}
++
++  '@types/node@22.20.1':
++    resolution: {integrity: sha512-EANqOCF9QFyra+4pfxUcX9STKJpCLjMbObVzljIJomAWSnuSIEAvyzEU53GaajbXJEgdh0iEcPL+DGvpUd4k1Q==}
++
++  '@vitest/expect@3.2.7':
++    resolution: {integrity: sha512-E8eBXaKibuvH2pSZErOjdVb5vF4PbKYcrnluBTYxEk1l/VhhwZg1kZQsdtjq+CsF5CFydf2Rdkz7jDHKSisi3w==}
++
++  '@vitest/mocker@3.2.7':
++    resolution: {integrity: sha512-Trr0hYO9CM3Wj6ksWHRhK9IZpIY6wTMO5u/MqXurMxT57sWBaOPEtP3Oq60ihZuh5JsiagKfz95OcxdEP6dBrA==}
++    peerDependencies:
++      msw: ^2.4.9
++      vite: ^5.0.0 || ^6.0.0 || ^7.0.0-0
++    peerDependenciesMeta:
++      msw:
++        optional: true
++      vite:
++        optional: true
++
++  '@vitest/pretty-format@3.2.7':
++    resolution: {integrity: sha512-KUHlwqVu0sRlhCdyPdQ/wBoTfRahjUky1MubOmYw9fWfIZy1gNoHpuaaQBPAaMaVYdQYHJLurzj8ECCj5OwTqA==}
++
++  '@vitest/runner@3.2.7':
++    resolution: {integrity: sha512-sB9y4ovltoQP+WaUPwmSxO9WIg9Ig694Di5PalVPsYHklAdE027mehpWF2SQSVq+k6sFgaivbTjTJwZLSHbedA==}
++
++  '@vitest/snapshot@3.2.7':
++    resolution: {integrity: sha512-7C+MwShwtBSI5Buwoyg3s/iY1eHL9PKAf+O1wVh/TdnjXUtkoL/9YQtre90i4MtNXM6edP1wJ2zOBpfCyhIS7g==}
++
++  '@vitest/spy@3.2.7':
++    resolution: {integrity: sha512-Q2eQGI6d2L/hBtZ0qNuKcAGid68XK6cv1xsoaIma6PaJhHPoqcEJhYpXZ/5myCMqkNgtP6UKuBhbc0nHKnrkuQ==}
++
++  '@vitest/utils@3.2.7':
++    resolution: {integrity: sha512-x6BDOd7dyo3PFLY3I9/HJ25X/6OurhGXk2/B9gOZNPF7XDVjeBK4k01lQE5uvDpbuheErh91qYuE1E2OEjK3Rw==}
++
++  assertion-error@2.0.1:
++    resolution: {integrity: sha512-Izi8RQcffqCeNVgFigKli1ssklIbpHnCYc6AknXGYoB6grJqyeby7jv12JUQgmTAnIDnbck1uxksT4dzN3PWBA==}
++    engines: {node: '>=12'}
++
++  cac@6.7.14:
++    resolution: {integrity: sha512-b6Ilus+c3RrdDk+JhLKUAQfzzgLEPy6wcXqS7f/xe1EETvsDP6GORG7SFuOs6cID5YkqchW/LXZbX5bc8j7ZcQ==}
++    engines: {node: '>=8'}
++
++  chai@5.3.3:
++    resolution: {integrity: sha512-4zNhdJD/iOjSH0A05ea+Ke6MU5mmpQcbQsSOkgdaUMJ9zTlDTD/GYlwohmIE2u0gaxHYiVHEn1Fw9mZ/ktJWgw==}
++    engines: {node: '>=18'}
++
++  check-error@2.1.3:
++    resolution: {integrity: sha512-PAJdDJusoxnwm1VwW07VWwUN1sl7smmC3OKggvndJFadxxDRyFJBX/ggnu/KE4kQAB7a3Dp8f/YXC1FlUprWmA==}
++    engines: {node: '>= 16'}
++
++  debug@4.4.3:
++    resolution: {integrity: sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==}
++    engines: {node: '>=6.0'}
++    peerDependencies:
++      supports-color: '*'
++    peerDependenciesMeta:
++      supports-color:
++        optional: true
++
++  deep-eql@5.0.2:
++    resolution: {integrity: sha512-h5k/5U50IJJFpzfL6nO9jaaumfjO/f2NjK/oYB2Djzm4p9L+3T9qWpZqZ2hAbLPuuYq9wrU08WQyBTL5GbPk5Q==}
++    engines: {node: '>=6'}
++
++  es-module-lexer@1.7.0:
++    resolution: {integrity: sha512-jEQoCwk8hyb2AZziIOLhDqpm5+2ww5uIE6lkO/6jcOCusfk6LhMHpXXfBLXTZ7Ydyt0j4VoUQv6uGNYbdW+kBA==}
++
++  esbuild@0.28.1:
++    resolution: {integrity: sha512-HrJrvZv5ayxBzPfwphOoNzkzOIIlifzk0KJrGK2c8R4+LKpMtpYLQeUdjnwjWv/LZlkH2laZk+4w78pi99D4Vw==}
++    engines: {node: '>=18'}
++    hasBin: true
++
++  estree-walker@3.0.3:
++    resolution: {integrity: sha512-7RUKfXgSMMkzt6ZuXmqapOurLGPPfgj6l9uRZ7lRGolvk0y2yocc35LdcxKC5PQZdn2DMqioAQ2NoWcrTKmm6g==}
++
++  expect-type@1.4.0:
++    resolution: {integrity: sha512-KfYbmpRm0VbLjEvVa9yGwCi9GI34xvi7A/HXYWQO65CSD2u3MczUJSuwXKFIxlGsgBQizV9q5J9NHj4VG0n+pA==}
++    engines: {node: '>=12.0.0'}
++
++  fdir@6.5.0:
++    resolution: {integrity: sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg==}
++    engines: {node: '>=12.0.0'}
++    peerDependencies:
++      picomatch: ^3 || ^4
++    peerDependenciesMeta:
++      picomatch:
++        optional: true
++
++  fsevents@2.3.3:
++    resolution: {integrity: sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==}
++    engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
++    os: [darwin]
++
++  js-tokens@9.0.1:
++    resolution: {integrity: sha512-mxa9E9ITFOt0ban3j6L5MpjwegGz6lBQmM1IJkWeBZGcMxto50+eWdjC/52xDbS2vy0k7vIMK0Fe2wfL9OQSpQ==}
++
++  loupe@3.2.1:
++    resolution: {integrity: sha512-CdzqowRJCeLU72bHvWqwRBBlLcMEtIvGrlvef74kMnV2AolS9Y8xUv1I0U/MNAWMhBlKIoyuEgoJ0t/bbwHbLQ==}
++
++  magic-string@0.30.21:
++    resolution: {integrity: sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ==}
++
++  ms@2.1.3:
++    resolution: {integrity: sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==}
++
++  nanoid@3.3.17:
++    resolution: {integrity: sha512-xQLf0A3HOMlgHq0n247/LRuAOYmB7dXJ/DvAxGvsSBij45XtBSmQycu+F8ODbHwns/XyFZagyL1+J0Offw1E0g==}
++    engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
++    hasBin: true
++
++  pathe@2.0.3:
++    resolution: {integrity: sha512-WUjGcAqP1gQacoQe+OBJsFA7Ld4DyXuUIjZ5cc75cLHvJ7dtNsTugphxIADwspS+AraAUePCKrSVtPLFj/F88w==}
++
++  pathval@2.0.1:
++    resolution: {integrity: sha512-//nshmD55c46FuFw26xV/xFAaB5HF9Xdap7HJBBnrKdAd6/GxDBaNA1870O79+9ueg61cZLSVc+OaFlfmObYVQ==}
++    engines: {node: '>= 14.16'}
++
++  picocolors@1.1.1:
++    resolution: {integrity: sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==}
++
++  picomatch@4.0.5:
++    resolution: {integrity: sha512-RvwwcruNjI1ncT5xRakeyS9Lf8lcItv34KD+aif+VH9kduAyfYBipGh12274xtenIPZ119/R9BdTBa8gAwSh0A==}
++    engines: {node: '>=12'}
++
++  postcss@8.5.25:
++    resolution: {integrity: sha512-DTPx3RWSSnWyzLxQnlH0rJP+EW5ekl16ZU4/psbIhA0e53kJfdgaN5vKM+xP7yJtXVu+nfdVFmlgFDEKAe4Pyw==}
++    engines: {node: ^10 || ^12 || >=14}
++
++  rollup@4.62.4:
++    resolution: {integrity: sha512-RXOqwaPsBGjMNMa4sQjDjHieHEZDFoj/Rdr46l2MU5DfEs16wHJPC2RPTPHWhNl+M3aI472LLqFkFKut4SblOg==}
++    engines: {node: '>=18.0.0', npm: '>=8.0.0'}
++    hasBin: true
++
++  siginfo@2.0.0:
++    resolution: {integrity: sha512-ybx0WO1/8bSBLEWXZvEd7gMW3Sn3JFlW3TvX1nREbDLRNQNaeNN8WK0meBwPdAaOI7TtRRRJn/Es1zhrrCHu7g==}
++
++  source-map-js@1.2.1:
++    resolution: {integrity: sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==}
++    engines: {node: '>=0.10.0'}
++
++  stackback@0.0.2:
++    resolution: {integrity: sha512-1XMJE5fQo1jGH6Y/7ebnwPOBEkIEnT4QF32d5R1+VXdXveM0IBMJt8zfaxX1P3QhVwrYe+576+jkANtSS2mBbw==}
++
++  std-env@3.10.0:
++    resolution: {integrity: sha512-5GS12FdOZNliM5mAOxFRg7Ir0pWz8MdpYm6AY6VPkGpbA7ZzmbzNcBJQ0GPvvyWgcY7QAhCgf9Uy89I03faLkg==}
++
++  strip-literal@3.1.0:
++    resolution: {integrity: sha512-8r3mkIM/2+PpjHoOtiAW8Rg3jJLHaV7xPwG+YRGrv6FP0wwk/toTpATxWYOW0BKdWwl82VT2tFYi5DlROa0Mxg==}
++
++  tinybench@2.9.0:
++    resolution: {integrity: sha512-0+DUvqWMValLmha6lr4kD8iAMK1HzV0/aKnCtWb9v9641TnP/MFb7Pc2bxoxQjTXAErryXVgUOfv2YqNllqGeg==}
++
++  tinyexec@0.3.2:
++    resolution: {integrity: sha512-KQQR9yN7R5+OSwaK0XQoj22pwHoTlgYqmUscPYoknOoWCWfj/5/ABTMRi69FrKU5ffPVh5QcFikpWJI/P1ocHA==}
++
++  tinyglobby@0.2.17:
++    resolution: {integrity: sha512-wXR/dYpcqKmfWpEdZjiKJOwCNFndD0DMnrW/cYjVGttEkBfVgcLFHoNrlj47mjOVic9yyNu65alsgF4NQyTa2g==}
++    engines: {node: '>=12.0.0'}
++
++  tinypool@1.1.1:
++    resolution: {integrity: sha512-Zba82s87IFq9A9XmjiX5uZA/ARWDrB03OHlq+Vw1fSdt0I+4/Kutwy8BP4Y/y/aORMo61FQ0vIb5j44vSo5Pkg==}
++    engines: {node: ^18.0.0 || >=20.0.0}
++
++  tinyrainbow@2.0.0:
++    resolution: {integrity: sha512-op4nsTR47R6p0vMUUoYl/a+ljLFVtlfaXkLQmqfLR1qHma1h/ysYk4hEXZ880bf2CYgTskvTa/e196Vd5dDQXw==}
++    engines: {node: '>=14.0.0'}
++
++  tinyspy@4.0.4:
++    resolution: {integrity: sha512-azl+t0z7pw/z958Gy9svOTuzqIk6xq+NSheJzn5MMWtWTFywIacg2wUlzKFGtt3cthx0r2SxMK0yzJOR0IES7Q==}
++    engines: {node: '>=14.0.0'}
++
++  tsx@4.23.5:
++    resolution: {integrity: sha512-rw55FUaqOoI7RvlQwLbhO4nSDApnQ4/CykPuiQ/EPvtrX3WA9Ig55jIt9VvbBJbzJuj12ueRu4PMZ2SxPVbihg==}
++    engines: {node: '>=18.0.0'}
++    hasBin: true
++
++  typescript@5.9.3:
++    resolution: {integrity: sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==}
++    engines: {node: '>=14.17'}
++    hasBin: true
++
++  undici-types@6.21.0:
++    resolution: {integrity: sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==}
++
++  vite-node@3.2.4:
++    resolution: {integrity: sha512-EbKSKh+bh1E1IFxeO0pg1n4dvoOTt0UDiXMd/qn++r98+jPO1xtJilvXldeuQ8giIB5IkpjCgMleHMNEsGH6pg==}
++    engines: {node: ^18.0.0 || ^20.0.0 || >=22.0.0}
++    hasBin: true
++
++  vite@7.3.6:
++    resolution: {integrity: sha512-4XP60spRGjSZFf1qYH+dJIkK2znL3zQfl9KkOV9MkkRR/3Dls0dxaBsQPTloEc5BLXWPL9vsOxopxyKoMmDueg==}
++    engines: {node: ^20.19.0 || >=22.12.0}
++    hasBin: true
++    peerDependencies:
++      '@types/node': ^20.19.0 || >=22.12.0
++      jiti: '>=1.21.0'
++      less: ^4.0.0
++      lightningcss: ^1.21.0
++      sass: ^1.70.0
++      sass-embedded: ^1.70.0
++      stylus: '>=0.54.8'
++      sugarss: ^5.0.0
++      terser: ^5.16.0
++      tsx: ^4.8.1
++      yaml: ^2.4.2
++    peerDependenciesMeta:
++      '@types/node':
++        optional: true
++      jiti:
++        optional: true
++      less:
++        optional: true
++      lightningcss:
++        optional: true
++      sass:
++        optional: true
++      sass-embedded:
++        optional: true
++      stylus:
++        optional: true
++      sugarss:
++        optional: true
++      terser:
++        optional: true
++      tsx:
++        optional: true
++      yaml:
++        optional: true
++
++  vitest@3.2.7:
++    resolution: {integrity: sha512-KrxIJ62Fd89gfysR4WotlgZABiz2dqFPgqGzX7s+CwsqLFomRH7777ZcrOD6+WVAh7khPQP41A+BKbpcJFrdEg==}
++    engines: {node: ^18.0.0 || ^20.0.0 || >=22.0.0}
++    hasBin: true
++    peerDependencies:
++      '@edge-runtime/vm': '*'
++      '@types/debug': ^4.1.12
++      '@types/node': ^18.0.0 || ^20.0.0 || >=22.0.0
++      '@vitest/browser': 3.2.7
++      '@vitest/ui': 3.2.7
++      happy-dom: '*'
++      jsdom: '*'
++    peerDependenciesMeta:
++      '@edge-runtime/vm':
++        optional: true
++      '@types/debug':
++        optional: true
++      '@types/node':
++        optional: true
++      '@vitest/browser':
++        optional: true
++      '@vitest/ui':
++        optional: true
++      happy-dom:
++        optional: true
++      jsdom:
++        optional: true
++
++  why-is-node-running@2.3.0:
++    resolution: {integrity: sha512-hUrmaWBdVDcxvYqnyh09zunKzROWjbZTiNy8dBEjkS7ehEDQibXJ7XvlmtbwuTclUiIyN+CyXQD4Vmko8fNm8w==}
++    engines: {node: '>=8'}
++    hasBin: true
++
++snapshots:
++
++  '@esbuild/aix-ppc64@0.28.1':
++    optional: true
++
++  '@esbuild/android-arm64@0.28.1':
++    optional: true
++
++  '@esbuild/android-arm@0.28.1':
++    optional: true
++
++  '@esbuild/android-x64@0.28.1':
++    optional: true
++
++  '@esbuild/darwin-arm64@0.28.1':
++    optional: true
++
++  '@esbuild/darwin-x64@0.28.1':
++    optional: true
++
++  '@esbuild/freebsd-arm64@0.28.1':
++    optional: true
++
++  '@esbuild/freebsd-x64@0.28.1':
++    optional: true
++
++  '@esbuild/linux-arm64@0.28.1':
++    optional: true
++
++  '@esbuild/linux-arm@0.28.1':
++    optional: true
++
++  '@esbuild/linux-ia32@0.28.1':
++    optional: true
++
++  '@esbuild/linux-loong64@0.28.1':
++    optional: true
++
++  '@esbuild/linux-mips64el@0.28.1':
++    optional: true
++
++  '@esbuild/linux-ppc64@0.28.1':
++    optional: true
++
++  '@esbuild/linux-riscv64@0.28.1':
++    optional: true
++
++  '@esbuild/linux-s390x@0.28.1':
++    optional: true
++
++  '@esbuild/linux-x64@0.28.1':
++    optional: true
++
++  '@esbuild/netbsd-arm64@0.28.1':
++    optional: true
++
++  '@esbuild/netbsd-x64@0.28.1':
++    optional: true
++
++  '@esbuild/openbsd-arm64@0.28.1':
++    optional: true
++
++  '@esbuild/openbsd-x64@0.28.1':
++    optional: true
++
++  '@esbuild/openharmony-arm64@0.28.1':
++    optional: true
++
++  '@esbuild/sunos-x64@0.28.1':
++    optional: true
++
++  '@esbuild/win32-arm64@0.28.1':
++    optional: true
++
++  '@esbuild/win32-ia32@0.28.1':
++    optional: true
++
++  '@esbuild/win32-x64@0.28.1':
++    optional: true
++
++  '@jridgewell/sourcemap-codec@1.5.5': {}
++
++  '@napi-rs/lzma-linux-x64-gnu@1.5.1':
++    optional: true
++
++  '@rollup/rollup-android-arm-eabi@4.62.4':
++    optional: true
++
++  '@rollup/rollup-android-arm64@4.62.4':
++    optional: true
++
++  '@rollup/rollup-darwin-arm64@4.62.4':
++    optional: true
++
++  '@rollup/rollup-darwin-x64@4.62.4':
++    optional: true
++
++  '@rollup/rollup-freebsd-arm64@4.62.4':
++    optional: true
++
++  '@rollup/rollup-freebsd-x64@4.62.4':
++    optional: true
++
++  '@rollup/rollup-linux-arm-gnueabihf@4.62.4':
++    optional: true
++
++  '@rollup/rollup-linux-arm-musleabihf@4.62.4':
++    optional: true
++
++  '@rollup/rollup-linux-arm64-gnu@4.62.4':
++    optional: true
++
++  '@rollup/rollup-linux-arm64-musl@4.62.4':
++    optional: true
++
++  '@rollup/rollup-linux-loong64-gnu@4.62.4':
++    optional: true
++
++  '@rollup/rollup-linux-loong64-musl@4.62.4':
++    optional: true
++
++  '@rollup/rollup-linux-ppc64-gnu@4.62.4':
++    optional: true
++
++  '@rollup/rollup-linux-ppc64-musl@4.62.4':
++    optional: true
++
++  '@rollup/rollup-linux-riscv64-gnu@4.62.4':
++    optional: true
++
++  '@rollup/rollup-linux-riscv64-musl@4.62.4':
++    optional: true
++
++  '@rollup/rollup-linux-s390x-gnu@4.62.4':
++    optional: true
++
++  '@rollup/rollup-linux-x64-gnu@4.62.4':
++    optional: true
++
++  '@rollup/rollup-linux-x64-musl@4.62.4':
++    optional: true
++
++  '@rollup/rollup-openbsd-x64@4.62.4':
++    optional: true
++
++  '@rollup/rollup-openharmony-arm64@4.62.4':
++    optional: true
++
++  '@rollup/rollup-win32-arm64-msvc@4.62.4':
++    optional: true
++
++  '@rollup/rollup-win32-ia32-msvc@4.62.4':
++    optional: true
++
++  '@rollup/rollup-win32-x64-gnu@4.62.4':
++    optional: true
++
++  '@rollup/rollup-win32-x64-msvc@4.62.4':
++    optional: true
++
++  '@types/chai@5.2.3':
++    dependencies:
++      '@types/deep-eql': 4.0.2
++      assertion-error: 2.0.1
++
++  '@types/deep-eql@4.0.2': {}
++
++  '@types/estree@1.0.9': {}
++
++  '@types/node@22.20.1':
++    dependencies:
++      undici-types: 6.21.0
++
++  '@vitest/expect@3.2.7':
++    dependencies:
++      '@types/chai': 5.2.3
++      '@vitest/spy': 3.2.7
++      '@vitest/utils': 3.2.7
++      chai: 5.3.3
++      tinyrainbow: 2.0.0
++
++  '@vitest/mocker@3.2.7(vite@7.3.6(@types/node@22.20.1)(tsx@4.23.5))':
++    dependencies:
++      '@vitest/spy': 3.2.7
++      estree-walker: 3.0.3
++      magic-string: 0.30.21
++    optionalDependencies:
++      vite: 7.3.6(@types/node@22.20.1)(tsx@4.23.5)
++
++  '@vitest/pretty-format@3.2.7':
++    dependencies:
++      tinyrainbow: 2.0.0
++
++  '@vitest/runner@3.2.7':
++    dependencies:
++      '@vitest/utils': 3.2.7
++      pathe: 2.0.3
++      strip-literal: 3.1.0
++
++  '@vitest/snapshot@3.2.7':
++    dependencies:
++      '@vitest/pretty-format': 3.2.7
++      magic-string: 0.30.21
++      pathe: 2.0.3
++
++  '@vitest/spy@3.2.7':
++    dependencies:
++      tinyspy: 4.0.4
++
++  '@vitest/utils@3.2.7':
++    dependencies:
++      '@vitest/pretty-format': 3.2.7
++      loupe: 3.2.1
++      tinyrainbow: 2.0.0
++
++  assertion-error@2.0.1: {}
++
++  cac@6.7.14: {}
++
++  chai@5.3.3:
++    dependencies:
++      assertion-error: 2.0.1
++      check-error: 2.1.3
++      deep-eql: 5.0.2
++      loupe: 3.2.1
++      pathval: 2.0.1
++
++  check-error@2.1.3: {}
++
++  debug@4.4.3:
++    dependencies:
++      ms: 2.1.3
++
++  deep-eql@5.0.2: {}
++
++  es-module-lexer@1.7.0: {}
++
++  esbuild@0.28.1:
++    optionalDependencies:
++      '@esbuild/aix-ppc64': 0.28.1
++      '@esbuild/android-arm': 0.28.1
++      '@esbuild/android-arm64': 0.28.1
++      '@esbuild/android-x64': 0.28.1
++      '@esbuild/darwin-arm64': 0.28.1
++      '@esbuild/darwin-x64': 0.28.1
++      '@esbuild/freebsd-arm64': 0.28.1
++      '@esbuild/freebsd-x64': 0.28.1
++      '@esbuild/linux-arm': 0.28.1
++      '@esbuild/linux-arm64': 0.28.1
++      '@esbuild/linux-ia32': 0.28.1
++      '@esbuild/linux-loong64': 0.28.1
++      '@esbuild/linux-mips64el': 0.28.1
++      '@esbuild/linux-ppc64': 0.28.1
++      '@esbuild/linux-riscv64': 0.28.1
++      '@esbuild/linux-s390x': 0.28.1
++      '@esbuild/linux-x64': 0.28.1
++      '@esbuild/netbsd-arm64': 0.28.1
++      '@esbuild/netbsd-x64': 0.28.1
++      '@esbuild/openbsd-arm64': 0.28.1
++      '@esbuild/openbsd-x64': 0.28.1
++      '@esbuild/openharmony-arm64': 0.28.1
++      '@esbuild/sunos-x64': 0.28.1
++      '@esbuild/win32-arm64': 0.28.1
++      '@esbuild/win32-ia32': 0.28.1
++      '@esbuild/win32-x64': 0.28.1
++
++  estree-walker@3.0.3:
++    dependencies:
++      '@types/estree': 1.0.9
++
++  expect-type@1.4.0: {}
++
++  fdir@6.5.0(picomatch@4.0.5):
++    optionalDependencies:
++      picomatch: 4.0.5
++
++  fsevents@2.3.3:
++    optional: true
++
++  js-tokens@9.0.1: {}
++
++  loupe@3.2.1: {}
++
++  magic-string@0.30.21:
++    dependencies:
++      '@jridgewell/sourcemap-codec': 1.5.5
++
++  ms@2.1.3: {}
++
++  nanoid@3.3.17: {}
++
++  pathe@2.0.3: {}
++
++  pathval@2.0.1: {}
++
++  picocolors@1.1.1: {}
++
++  picomatch@4.0.5: {}
++
++  postcss@8.5.25:
++    dependencies:
++      nanoid: 3.3.17
++      picocolors: 1.1.1
++      source-map-js: 1.2.1
++
++  rollup@4.62.4:
++    dependencies:
++      '@types/estree': 1.0.9
++    optionalDependencies:
++      '@napi-rs/lzma-linux-x64-gnu': 1.5.1
++      '@rollup/rollup-android-arm-eabi': 4.62.4
++      '@rollup/rollup-android-arm64': 4.62.4
++      '@rollup/rollup-darwin-arm64': 4.62.4
++      '@rollup/rollup-darwin-x64': 4.62.4
++      '@rollup/rollup-freebsd-arm64': 4.62.4
++      '@rollup/rollup-freebsd-x64': 4.62.4
++      '@rollup/rollup-linux-arm-gnueabihf': 4.62.4
++      '@rollup/rollup-linux-arm-musleabihf': 4.62.4
++      '@rollup/rollup-linux-arm64-gnu': 4.62.4
++      '@rollup/rollup-linux-arm64-musl': 4.62.4
++      '@rollup/rollup-linux-loong64-gnu': 4.62.4
++      '@rollup/rollup-linux-loong64-musl': 4.62.4
++      '@rollup/rollup-linux-ppc64-gnu': 4.62.4
++      '@rollup/rollup-linux-ppc64-musl': 4.62.4
++      '@rollup/rollup-linux-riscv64-gnu': 4.62.4
++      '@rollup/rollup-linux-riscv64-musl': 4.62.4
++      '@rollup/rollup-linux-s390x-gnu': 4.62.4
++      '@rollup/rollup-linux-x64-gnu': 4.62.4
++      '@rollup/rollup-linux-x64-musl': 4.62.4
++      '@rollup/rollup-openbsd-x64': 4.62.4
++      '@rollup/rollup-openharmony-arm64': 4.62.4
++      '@rollup/rollup-win32-arm64-msvc': 4.62.4
++      '@rollup/rollup-win32-ia32-msvc': 4.62.4
++      '@rollup/rollup-win32-x64-gnu': 4.62.4
++      '@rollup/rollup-win32-x64-msvc': 4.62.4
++      fsevents: 2.3.3
++
++  siginfo@2.0.0: {}
++
++  source-map-js@1.2.1: {}
++
++  stackback@0.0.2: {}
++
++  std-env@3.10.0: {}
++
++  strip-literal@3.1.0:
++    dependencies:
++      js-tokens: 9.0.1
++
++  tinybench@2.9.0: {}
++
++  tinyexec@0.3.2: {}
++
++  tinyglobby@0.2.17:
++    dependencies:
++      fdir: 6.5.0(picomatch@4.0.5)
++      picomatch: 4.0.5
++
++  tinypool@1.1.1: {}
++
++  tinyrainbow@2.0.0: {}
++
++  tinyspy@4.0.4: {}
++
++  tsx@4.23.5:
++    dependencies:
++      esbuild: 0.28.1
++    optionalDependencies:
++      fsevents: 2.3.3
++
++  typescript@5.9.3: {}
++
++  undici-types@6.21.0: {}
++
++  vite-node@3.2.4(@types/node@22.20.1)(tsx@4.23.5):
++    dependencies:
++      cac: 6.7.14
++      debug: 4.4.3
++      es-module-lexer: 1.7.0
++      pathe: 2.0.3
++      vite: 7.3.6(@types/node@22.20.1)(tsx@4.23.5)
++    transitivePeerDependencies:
++      - '@types/node'
++      - jiti
++      - less
++      - lightningcss
++      - sass
++      - sass-embedded
++      - stylus
++      - sugarss
++      - supports-color
++      - terser
++      - tsx
++      - yaml
++
++  vite@7.3.6(@types/node@22.20.1)(tsx@4.23.5):
++    dependencies:
++      esbuild: 0.28.1
++      fdir: 6.5.0(picomatch@4.0.5)
++      picomatch: 4.0.5
++      postcss: 8.5.25
++      rollup: 4.62.4
++      tinyglobby: 0.2.17
++    optionalDependencies:
++      '@types/node': 22.20.1
++      fsevents: 2.3.3
++      tsx: 4.23.5
++
++  vitest@3.2.7(@types/node@22.20.1)(tsx@4.23.5):
++    dependencies:
++      '@types/chai': 5.2.3
++      '@vitest/expect': 3.2.7
++      '@vitest/mocker': 3.2.7(vite@7.3.6(@types/node@22.20.1)(tsx@4.23.5))
++      '@vitest/pretty-format': 3.2.7
++      '@vitest/runner': 3.2.7
++      '@vitest/snapshot': 3.2.7
++      '@vitest/spy': 3.2.7
++      '@vitest/utils': 3.2.7
++      chai: 5.3.3
++      debug: 4.4.3
++      expect-type: 1.4.0
++      magic-string: 0.30.21
++      pathe: 2.0.3
++      picomatch: 4.0.5
++      std-env: 3.10.0
++      tinybench: 2.9.0
++      tinyexec: 0.3.2
++      tinyglobby: 0.2.17
++      tinypool: 1.1.1
++      tinyrainbow: 2.0.0
++      vite: 7.3.6(@types/node@22.20.1)(tsx@4.23.5)
++      vite-node: 3.2.4(@types/node@22.20.1)(tsx@4.23.5)
++      why-is-node-running: 2.3.0
++    optionalDependencies:
++      '@types/node': 22.20.1
++    transitivePeerDependencies:
++      - jiti
++      - less
++      - lightningcss
++      - msw
++      - sass
++      - sass-embedded
++      - stylus
++      - sugarss
++      - supports-color
++      - terser
++      - tsx
++      - yaml
++
++  why-is-node-running@2.3.0:
++    dependencies:
++      siginfo: 2.0.0
++      stackback: 0.0.2
+diff --git a/npm/pnpm-workspace.yaml b/npm/pnpm-workspace.yaml
+new file mode 100644
+index 0000000..5ed0b5a
+--- /dev/null
++++ b/npm/pnpm-workspace.yaml
+@@ -0,0 +1,2 @@
++allowBuilds:
++  esbuild: true
+diff --git a/npm/src/index.ts b/npm/src/index.ts
+new file mode 100644
+index 0000000..f0e8e04
+--- /dev/null
++++ b/npm/src/index.ts
+@@ -0,0 +1,3 @@
++export * from './types.js';
++export { SubprocessClusterer } from './subprocess-clusterer.js';
++export { WasmClusterer } from './wasm-clusterer.js';
+diff --git a/npm/src/subprocess-clusterer.ts b/npm/src/subprocess-clusterer.ts
+new file mode 100644
+index 0000000..bf7ae06
+--- /dev/null
++++ b/npm/src/subprocess-clusterer.ts
+@@ -0,0 +1,78 @@
++import { spawn } from 'node:child_process';
++import { type ClusterParams, type ClusterResult, ClustererError, type Clusterer, type ProtocolResponse } from './types.js';
++
++export class SubprocessClusterer implements Clusterer {
++  readonly #argv: readonly string[];
++
++  /** argv[0] = executable, rest = args. E.g. ['.venv/bin/python', 'clusterer.py']. */
++  constructor(argv: readonly string[]) {
++    if (argv.length === 0) throw new ClustererError('empty clusterer argv');
++    this.#argv = argv;
++  }
++
++  async cluster(vectors: readonly Float32Array[], params: ClusterParams): Promise<ClusterResult> {
++    const request = JSON.stringify({
++      protocol_version: 1,
++      vectors: vectors.map((v) => [...v]),
++      params: {
++        n_components: params.nComponents,
++        n_neighbors: params.nNeighbors,
++        min_cluster_size: params.minClusterSize,
++        seed: params.seed
++      }
++    });
++
++    const [cmd, ...args] = this.#argv as [string, ...string[]];
++    const stdout = await new Promise<string>((resolve, reject) => {
++      const child = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'] });
++      let out = '';
++      let err = '';
++      let settled = false;
++      const settle = (fn: () => void) => {
++        if (!settled) {
++          settled = true;
++          fn();
++        }
++      };
++      child.stdout.on('data', (d: Buffer) => {
++        out += d.toString();
++      });
++      child.stderr.on('data', (d: Buffer) => {
++        err += d.toString();
++      });
++      child.on('error', (e) =>
++        settle(() => reject(new ClustererError(`spawn failed: ${e.message}`)))
++      );
++      child.on('close', (code) => {
++        if (code !== 0 && out.trim().length === 0) {
++          settle(() =>
++            reject(new ClustererError(`clusterer exited ${code}: ${err.slice(0, 500)}`))
++          );
++          return;
++        }
++        settle(() => resolve(out));
++      });
++      child.stdin.write(`${request}\n`);
++      child.stdin.end();
++    });
++
++    const lastLine = stdout.trim().split('\n').at(-1);
++    if (lastLine === undefined || lastLine.length === 0) {
++      throw new ClustererError('clusterer produced no output');
++    }
++    const response = JSON.parse(lastLine) as ProtocolResponse;
++    if (response.error !== undefined && response.error !== null) {
++      throw new ClustererError(response.error);
++    }
++    if (response.assignments.length !== vectors.length) {
++      throw new ClustererError(
++        `assignment count ${response.assignments.length} != input count ${vectors.length}`
++      );
++    }
++    const result: ClusterResult = { assignments: response.assignments };
++    if (response.probabilities !== undefined) {
++      return { ...result, probabilities: response.probabilities };
++    }
++    return result;
++  }
++}
+diff --git a/npm/src/types.ts b/npm/src/types.ts
+new file mode 100644
+index 0000000..3860914
+--- /dev/null
++++ b/npm/src/types.ts
+@@ -0,0 +1,35 @@
++export interface ClusterParams {
++  /** 0 = skip reduction (protocol convention). */
++  nComponents: number;
++  nNeighbors: number;
++  minClusterSize: number;
++  seed: number;
++}
++
++export interface ClusterResult {
++  /** Label per input vector; -1 = noise (HDBSCAN convention). */
++  assignments: readonly number[];
++  /**
++   * Never populated by either backend: hdbscan 0.12's .cluster() returns
++   * labels only. Present for protocol forward-compatibility.
++   */
++  probabilities?: readonly number[];
++}
++
++export interface Clusterer {
++  cluster(vectors: readonly Float32Array[], params: ClusterParams): Promise<ClusterResult>;
++}
++
++export class ClustererError extends Error {
++  constructor(detail: string) {
++    super(detail);
++    this.name = 'ClustererError';
++  }
++}
++
++export interface ProtocolResponse {
++  protocol_version: number;
++  assignments: number[];
++  probabilities?: number[];
++  error?: string;
++}
+diff --git a/npm/src/wasm-clusterer.ts b/npm/src/wasm-clusterer.ts
+new file mode 100644
+index 0000000..a66c4a2
+--- /dev/null
++++ b/npm/src/wasm-clusterer.ts
+@@ -0,0 +1,89 @@
++import { createRequire } from 'node:module';
++import {
++  type ClusterParams,
++  type ClusterResult,
++  ClustererError,
++  type Clusterer
++} from './types.js';
++
++// wasm-pack --target nodejs emits CJS glue. createRequire loads it from an
++// ESM module without a bundler step, and resolves the .wasm relative to the
++// package's own directory so consumers never handle asset paths.
++const require = createRequire(import.meta.url);
++
++interface WasmModule {
++  reduce_and_cluster(
++    vectors: Float32Array,
++    nFeatures: number,
++    nComponents: number,
++    nNeighbors: number,
++    minClusterSize: number,
++    seed: number
++  ): Int32Array;
++}
++
++/**
++ * Bundled wasm backend — the default.
++ *
++ * The module is loaded lazily on first use, never at import time, so this
++ * file can be imported inside a worker_threads Worker without side effects.
++ * Consumers SHOULD run it in a worker: the batch is CPU-bound for tens of
++ * seconds and would otherwise block the event loop.
++ */
++export class WasmClusterer implements Clusterer {
++  #module: WasmModule | undefined;
++
++  #load(): WasmModule {
++    this.#module ??= require('../wasm/holomap_clusterer.js') as WasmModule;
++    return this.#module;
++  }
++
++  async cluster(
++    vectors: readonly Float32Array[],
++    params: ClusterParams
++  ): Promise<ClusterResult> {
++    if (vectors.length === 0) throw new ClustererError('empty input');
++
++    const nFeatures = vectors[0]!.length;
++    if (vectors.some((v) => v.length !== nFeatures)) {
++      throw new ClustererError('vector dimensions inconsistent');
++    }
++
++    // The Rust binding takes seed as f64 and casts to u64. That cast
++    // saturates: NaN and negatives silently become 0, and anything above
++    // 2^53 has already lost precision as a JS number. A seed that quietly
++    // becomes a different seed is the worst failure this API can have —
++    // determinism is the whole product — so reject rather than coerce.
++    if (!Number.isInteger(params.seed) || params.seed < 0 || params.seed > Number.MAX_SAFE_INTEGER) {
++      throw new ClustererError(
++        `seed must be a non-negative integer <= 2^53-1, got ${params.seed}`
++      );
++    }
++
++    // Flatten to row-major. One copy — negligible beside an O(N^2*d) kNN,
++    // and it keeps the production Clusterer signature unchanged.
++    const flat = new Float32Array(vectors.length * nFeatures);
++    for (let i = 0; i < vectors.length; i++) flat.set(vectors[i]!, i * nFeatures);
++
++    let assignments: Int32Array;
++    try {
++      assignments = this.#load().reduce_and_cluster(
++        flat,
++        nFeatures,
++        params.nComponents,
++        params.nNeighbors,
++        params.minClusterSize,
++        params.seed
++      );
++    } catch (e) {
++      throw new ClustererError(e instanceof Error ? e.message : String(e));
++    }
++
++    if (assignments.length !== vectors.length) {
++      throw new ClustererError(
++        `assignment count ${assignments.length} != input count ${vectors.length}`
++      );
++    }
++    return { assignments: Array.from(assignments) };
++  }
++}
+diff --git a/npm/test/backend-equivalence.test.ts b/npm/test/backend-equivalence.test.ts
+new file mode 100644
+index 0000000..f9d3284
+--- /dev/null
++++ b/npm/test/backend-equivalence.test.ts
+@@ -0,0 +1,49 @@
++import { describe, expect, it } from 'vitest';
++import { SubprocessClusterer, WasmClusterer } from '../src/index.js';
++
++const BIN = new URL('../../target/release/holomap-clusterer', import.meta.url).pathname;
++const PARAMS = { nComponents: 5, nNeighbors: 15, minClusterSize: 5, seed: 1234 };
++
++function blobs(dims: number): Float32Array[] {
++  let state = 42n;
++  const next = () => {
++    state = (state * 6364136223846793005n + 1442695040888963407n) & 0xffffffffffffffffn;
++    return Number(state >> 33n) / 0xffffffff - 0.5;
++  };
++  const out: Float32Array[] = [];
++  for (let blob = 0; blob < 3; blob++) {
++    for (let i = 0; i < 30; i++) {
++      const v = new Float32Array(dims);
++      v[blob * 2] = 10.0;
++      for (let j = 0; j < dims; j++) v[j] += next() * 0.5;
++      out.push(v);
++    }
++  }
++  return out;
++}
++
++/**
++ * Gate 3. The bar is NOT byte-identity: holomap promises only structural
++ * identity cross-platform ("floats may differ at ULP level"), so native-on-
++ * Linux and native-on-macOS may already differ, and HDBSCAN is a density
++ * algorithm where small coordinate perturbations flip boundary points.
++ * Requiring wasm to match native more tightly than native matches itself
++ * would be an unfair gate.
++ *
++ * What must hold is that both backends recover the same STRUCTURE. If this
++ * ever fails, the fix is not to loosen it — it is to record the backend in
++ * provenance so a switch is observable, and investigate the divergence.
++ */
++describe('backend equivalence', () => {
++  it('both backends recover the same cluster structure', async () => {
++    const vectors = blobs(32);
++    const wasm = await new WasmClusterer().cluster(vectors, PARAMS);
++    const native = await new SubprocessClusterer([BIN]).cluster(vectors, PARAMS);
++
++    const count = (a: readonly number[]) => new Set(a.filter((l) => l >= 0)).size;
++    const noise = (a: readonly number[]) => a.filter((l) => l === -1).length;
++
++    expect(count(wasm.assignments)).toBe(count(native.assignments));
++    expect(Math.abs(noise(wasm.assignments) - noise(native.assignments))).toBeLessThanOrEqual(2);
++  });
++});
+diff --git a/npm/test/subprocess-clusterer.test.ts b/npm/test/subprocess-clusterer.test.ts
+new file mode 100644
+index 0000000..c1a3cee
+--- /dev/null
++++ b/npm/test/subprocess-clusterer.test.ts
+@@ -0,0 +1,37 @@
++import { describe, expect, it } from 'vitest';
++import { ClustererError, SubprocessClusterer } from '../src/index.js';
++
++const BIN = new URL('../../target/release/holomap-clusterer', import.meta.url).pathname;
++
++function blobs(): Float32Array[] {
++  let state = 42n;
++  const next = () => {
++    state = (state * 6364136223846793005n + 1442695040888963407n) & 0xffffffffffffffffn;
++    return Number(state >> 33n) / 0xffffffff - 0.5;
++  };
++  const out: Float32Array[] = [];
++  for (let blob = 0; blob < 3; blob++) {
++    for (let i = 0; i < 30; i++) {
++      const v = new Float32Array(8);
++      v[blob * 2] = 10.0;
++      for (let j = 0; j < 8; j++) v[j] += next() * 0.5;
++      out.push(v);
++    }
++  }
++  return out;
++}
++
++describe('SubprocessClusterer', () => {
++  it('separates three blobs', async () => {
++    const clusterer = new SubprocessClusterer([BIN]);
++    const result = await clusterer.cluster(blobs(), {
++      nComponents: 0, nNeighbors: 15, minClusterSize: 5, seed: 42
++    });
++    const labels = new Set(result.assignments.filter((l) => l >= 0));
++    expect(labels.size).toBe(3);
++  });
++
++  it('throws ClustererError on an empty argv', () => {
++    expect(() => new SubprocessClusterer([])).toThrow(ClustererError);
++  });
++});
+diff --git a/npm/test/ts-extension-loader.mjs b/npm/test/ts-extension-loader.mjs
+new file mode 100644
+index 0000000..3ffb058
+--- /dev/null
++++ b/npm/test/ts-extension-loader.mjs
+@@ -0,0 +1,25 @@
++// Node's --experimental-strip-types resolves import specifiers literally:
++// `./foo.js` is looked up as a file named foo.js on disk, with no fallback
++// to a sibling foo.ts (https://nodejs.org/api/typescript.html — "file
++// extensions are mandatory... import './file.ts', not import './file.js'").
++// This repo's src/ uses NodeNext-style `.js` specifiers pointing at `.ts`
++// files (required for the tsc-emitted dist/ output and honoured by
++// vitest/Vite's resolver), so running src/*.ts directly under raw
++// --experimental-strip-types needs this one-line remap. Registered
++// synchronously, in-thread, via `--import` in the worker-smoke test's
++// execArgv — registerHooks (not the deprecated async module.register) is
++// the current API for an in-thread resolve hook this simple.
++import { registerHooks } from 'node:module';
++
++registerHooks({
++  resolve(specifier, context, nextResolve) {
++    try {
++      return nextResolve(specifier, context);
++    } catch (err) {
++      if (err?.code === 'ERR_MODULE_NOT_FOUND' && specifier.endsWith('.js')) {
++        return nextResolve(`${specifier.slice(0, -3)}.ts`, context);
++      }
++      throw err;
++    }
++  }
++});
+diff --git a/npm/test/wasm-clusterer.test.ts b/npm/test/wasm-clusterer.test.ts
+new file mode 100644
+index 0000000..f8aea19
+--- /dev/null
++++ b/npm/test/wasm-clusterer.test.ts
+@@ -0,0 +1,52 @@
++import { describe, expect, it } from 'vitest';
++import { ClustererError, WasmClusterer } from '../src/index.js';
++
++function blobs(): Float32Array[] {
++  let state = 42n;
++  const next = () => {
++    state = (state * 6364136223846793005n + 1442695040888963407n) & 0xffffffffffffffffn;
++    return Number(state >> 33n) / 0xffffffff - 0.5;
++  };
++  const out: Float32Array[] = [];
++  for (let blob = 0; blob < 3; blob++) {
++    for (let i = 0; i < 30; i++) {
++      const v = new Float32Array(8);
++      v[blob * 2] = 10.0;
++      for (let j = 0; j < 8; j++) v[j] += next() * 0.5;
++      out.push(v);
++    }
++  }
++  return out;
++}
++
++const PARAMS = { nComponents: 0, nNeighbors: 15, minClusterSize: 5, seed: 42 };
++
++describe('WasmClusterer', () => {
++  it('separates three blobs', async () => {
++    const result = await new WasmClusterer().cluster(blobs(), PARAMS);
++    expect(new Set(result.assignments.filter((l) => l >= 0)).size).toBe(3);
++  });
++
++  it('is deterministic across runs', async () => {
++    const c = new WasmClusterer();
++    const a = await c.cluster(blobs(), PARAMS);
++    const b = await c.cluster(blobs(), PARAMS);
++    expect(a.assignments).toEqual(b.assignments);
++  });
++
++  it('throws ClustererError on ragged input', async () => {
++    const ragged = [new Float32Array(8), new Float32Array(5)];
++    await expect(new WasmClusterer().cluster(ragged, PARAMS)).rejects.toThrow(ClustererError);
++  });
++
++  it.each([Number.NaN, -1, 1.5, 2 ** 53])('rejects seed %p rather than coercing it', async (seed) => {
++    await expect(
++      new WasmClusterer().cluster(blobs(), { ...PARAMS, seed })
++    ).rejects.toThrow(/seed must be/);
++  });
++
++  it('throws ClustererError above MAX_ROWS', async () => {
++    const many = Array.from({ length: 50_001 }, () => new Float32Array(2));
++    await expect(new WasmClusterer().cluster(many, PARAMS)).rejects.toThrow(/MAX_ROWS/);
++  });
++});
+diff --git a/npm/test/wasm-lazy-load.test.ts b/npm/test/wasm-lazy-load.test.ts
+new file mode 100644
+index 0000000..7043f68
+--- /dev/null
++++ b/npm/test/wasm-lazy-load.test.ts
+@@ -0,0 +1,52 @@
++import { createRequire } from 'node:module';
++import { describe, expect, it } from 'vitest';
++import { WasmClusterer } from '../src/index.js';
++
++// The observable is require.cache membership for the wasm glue's resolved
++// path — the worker-smoke test proves the module runs correctly inside a
++// Worker, but says nothing about *when* it loads, so an eager require at
++// module scope would pass it silently. This test is the actual lazy-load
++// gate.
++//
++// Resolved the same way wasm-clusterer.ts resolves it: its own
++// require('../wasm/holomap_clusterer.js') runs from npm/src/, one directory
++// level under npm/. This test file lives at npm/test/, the same depth under
++// npm/, so the identical relative specifier resolves to the exact same
++// absolute file — not a path that was never going to be in the cache.
++const require = createRequire(import.meta.url);
++const wasmGluePath = require.resolve('../wasm/holomap_clusterer.js');
++
++const PARAMS = { nComponents: 0, nNeighbors: 15, minClusterSize: 5, seed: 42 };
++
++// Same shape as wasm-clusterer.test.ts's blobs() — enough rows for
++// nNeighbors: 15 not to underflow the pipeline. This test only needs
++// cluster() to complete without erroring; cluster *quality* isn't the point.
++function blobs(): Float32Array[] {
++  let state = 42n;
++  const next = () => {
++    state = (state * 6364136223846793005n + 1442695040888963407n) & 0xffffffffffffffffn;
++    return Number(state >> 33n) / 0xffffffff - 0.5;
++  };
++  const out: Float32Array[] = [];
++  for (let blob = 0; blob < 3; blob++) {
++    for (let i = 0; i < 30; i++) {
++      const v = new Float32Array(8);
++      v[blob * 2] = 10.0;
++      for (let j = 0; j < 8; j++) v[j] += next() * 0.5;
++      out.push(v);
++    }
++  }
++  return out;
++}
++
++describe('WasmClusterer lazy loading', () => {
++  it('does not require the wasm glue until cluster() is called', async () => {
++    expect(require.cache[wasmGluePath]).toBeUndefined();
++
++    const clusterer = new WasmClusterer();
++    expect(require.cache[wasmGluePath]).toBeUndefined();
++
++    await clusterer.cluster(blobs(), PARAMS);
++    expect(require.cache[wasmGluePath]).toBeDefined();
++  });
++});
+diff --git a/npm/test/worker-smoke.test.ts b/npm/test/worker-smoke.test.ts
+new file mode 100644
+index 0000000..75e9dd8
+--- /dev/null
++++ b/npm/test/worker-smoke.test.ts
+@@ -0,0 +1,41 @@
++import { Worker } from 'node:worker_threads';
++import { describe, expect, it } from 'vitest';
++
++const WORKER = `
++import { parentPort } from 'node:worker_threads';
++import { WasmClusterer } from '${new URL('../src/index.ts', import.meta.url).pathname}';
++const vectors = [];
++for (let blob = 0; blob < 3; blob++)
++  for (let i = 0; i < 30; i++) {
++    const v = new Float32Array(8);
++    v[blob * 2] = 10.0;
++    v[7] = i * 0.01;
++    vectors.push(v);
++  }
++const r = await new WasmClusterer().cluster(vectors,
++  { nComponents: 0, nNeighbors: 15, minClusterSize: 5, seed: 42 });
++parentPort.postMessage(r.assignments);
++`;
++
++// Node's --experimental-strip-types resolves import specifiers literally
++// (https://nodejs.org/api/typescript.html) — a `./foo.js` specifier is never
++// remapped to a sibling `foo.ts`. This repo's src/ uses `.js` specifiers per
++// NodeNext moduleResolution (correct for the tsc-emitted dist/ output, and
++// already handled by vitest's own Vite-based resolver for every other test
++// in this suite). Only this test runs raw node against the .ts source
++// directly, so it alone needs the one-line extension-remap loader below.
++const LOADER = new URL('./ts-extension-loader.mjs', import.meta.url).pathname;
++
++describe('worker_threads', () => {
++  it('loads and runs inside a Worker with no top-level side effects', async () => {
++    const assignments = await new Promise<number[]>((resolve, reject) => {
++      const w = new Worker(WORKER, {
++        eval: true,
++        execArgv: ['--experimental-strip-types', '--import', LOADER]
++      });
++      w.on('message', resolve);
++      w.on('error', reject);
++    });
++    expect(new Set(assignments.filter((l) => l >= 0)).size).toBe(3);
++  });
++});
+diff --git a/npm/tsconfig.json b/npm/tsconfig.json
+new file mode 100644
+index 0000000..f13bafb
+--- /dev/null
++++ b/npm/tsconfig.json
+@@ -0,0 +1,14 @@
++{
++  "compilerOptions": {
++    "target": "ES2022",
++    "module": "NodeNext",
++    "moduleResolution": "NodeNext",
++    "strict": true,
++    "exactOptionalPropertyTypes": true,
++    "declaration": true,
++    "outDir": "dist",
++    "rootDir": "src",
++    "skipLibCheck": true
++  },
++  "include": ["src"]
++}
+diff --git a/npm/vitest.config.ts b/npm/vitest.config.ts
+new file mode 100644
+index 0000000..46ef1ff
+--- /dev/null
++++ b/npm/vitest.config.ts
+@@ -0,0 +1,5 @@
++import { defineConfig } from 'vitest/config';
++
++export default defineConfig({
++  test: { include: ['test/**/*.test.ts'], testTimeout: 120_000 }
++});
+diff --git a/scripts/build-wasm.sh b/scripts/build-wasm.sh
+new file mode 100755
+index 0000000..55f9550
+--- /dev/null
++++ b/scripts/build-wasm.sh
+@@ -0,0 +1,35 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++# wasm-pack is NOT used: wasm-pack 0.15.0 invokes `cargo build --out-dir`
++# internally, and cargo 1.95.0 renamed that unstable flag to --artifact-dir,
++# so every wasm-pack build fails. Reproduced independently 2026-08-05.
++#
++# The direct route is also strictly better: wasm-bindgen-cli MUST match the
++# wasm-bindgen crate version exactly, and a mismatch fails in confusing ways.
++# wasm-pack hid that coupling; here it is explicit and derived from Cargo.lock.
++
++cd "$(dirname "${BASH_SOURCE[0]}")/.."
++
++WB_VERSION=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | grep '^version' | cut -d'"' -f2)
++echo "matching wasm-bindgen-cli to crate version $WB_VERSION"
++cargo install wasm-bindgen-cli --version "$WB_VERSION" --locked
++
++RUSTFLAGS="-C target-feature=+simd128" \
++  cargo build --release --target wasm32-unknown-unknown -p holomap-clusterer --features wasm
++
++wasm-bindgen --target nodejs --out-dir npm/wasm \
++  target/wasm32-unknown-unknown/release/holomap_clusterer.wasm
++
++# wasm-bindgen's --target nodejs glue is CommonJS (`exports.foo = ...`), but
++# npm/package.json declares "type": "module" for the rest of the package.
++# Without this marker Node resolves npm/wasm/*.js as ESM by nearest-
++# package.json lookup and `exports is not defined` at load time. This file
++# scopes CommonJS back to just the wasm output directory.
++cat > npm/wasm/package.json <<'EOF'
++{
++  "type": "commonjs"
++}
++EOF
++
++ls -la npm/wasm/

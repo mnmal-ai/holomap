@@ -1,0 +1,276 @@
+# Review package: 36edb6d..772547b
+
+## Commits
+772547b ci: cover the workspace, the wasm build and the npm suite
+
+## Files changed
+ .github/workflows/ci.yml                |  23 ++++++-
+ .gitignore                              |   3 +
+ npm/package.json                        |   2 +
+ npm/wasm/holomap_clusterer.d.ts         |   4 --
+ npm/wasm/holomap_clusterer.js           | 106 --------------------------------
+ npm/wasm/holomap_clusterer_bg.wasm      | Bin 261036 -> 0 bytes
+ npm/wasm/holomap_clusterer_bg.wasm.d.ts |   9 ---
+ npm/wasm/package.json                   |   3 -
+ 8 files changed, 26 insertions(+), 124 deletions(-)
+
+## Diff
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 8bbd7e3..25173a6 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -10,38 +10,57 @@ env:
+ 
+ jobs:
+   lint:
+     runs-on: ubuntu-latest
+     steps:
+       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable as of 2026-06-07
+         with:
+           components: rustfmt, clippy
+       - run: cargo fmt --check
+-      - run: cargo clippy --all-targets --all-features -- -D warnings
++      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+ 
+   # Cross-platform: same-platform bit-identity must hold on every OS (the
+   # in-suite double-run gate checks it per platform), and the structural
+   # quality gates back the README's "cross-platform structurally identical"
+   # claim with evidence rather than assertion. fail-fast off so one platform's
+   # result never hides another's.
+   test:
+     strategy:
+       fail-fast: false
+       matrix:
+         os: [ubuntu-latest, macos-latest, windows-latest]
+     runs-on: ${{ matrix.os }}
+     steps:
+       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable as of 2026-06-07
+-      - run: cargo test --all-features
++      - run: cargo test --workspace --all-features
+ 
+   # The reason this crate exists. Runs the suite twice on the reference
+   # platform — the in-process determinism gate plus a second invocation for
+   # cross-process byte-stability.
+   determinism:
+     runs-on: ubuntu-latest
+     steps:
+       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable as of 2026-06-07
+       - run: cargo test --all-features
+       - run: cargo test --all-features
++
++  wasm:
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
++      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable as of 2026-06-07
++        with:
++          targets: wasm32-unknown-unknown
++      - name: Build wasm
++        run: bash scripts/build-wasm.sh
++      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
++        with: { version: 10 }
++      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v5.0.0
++        with: { node-version: 22 }
++      - name: Build the native binary for the subprocess backend
++        run: cargo build --release -p holomap-clusterer
++      - name: npm suite
++        working-directory: npm
++        run: pnpm install --frozen-lockfile && pnpm check-types && pnpm test
+diff --git a/.gitignore b/.gitignore
+index 81d869e..407e00a 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -3,10 +3,13 @@ __pycache__/
+ 
+ # SDD scratch + worktrees (git-ignored working state, never committed)
+ .superpowers/
+ .worktrees/
+ 
+ crates/holomap-clusterer/pkg/
+ 
+ # npm package build output + deps
+ npm/node_modules/
+ npm/dist/
++
++# wasm build output — produced by scripts/build-wasm.sh, never committed
++npm/wasm/
+diff --git a/npm/package.json b/npm/package.json
+index 7bba515..1efdfe9 100644
+--- a/npm/package.json
++++ b/npm/package.json
+@@ -5,20 +5,22 @@
+   "license": "MIT OR Apache-2.0",
+   "repository": { "type": "git", "url": "git+https://github.com/mnmal-ai/holomap.git", "directory": "npm" },
+   "type": "module",
+   "main": "./dist/index.js",
+   "types": "./dist/index.d.ts",
+   "exports": { ".": { "import": "./dist/index.js", "types": "./dist/index.d.ts" } },
+   "files": ["dist", "wasm"],
+   "scripts": {
+     "build": "tsc -p tsconfig.json",
+     "build:wasm": "bash ../scripts/build-wasm.sh",
++    "prepublishOnly": "bash ../scripts/build-wasm.sh",
++    "pretest": "test -f wasm/holomap_clusterer.js || { echo 'wasm artifact missing — run: pnpm build:wasm'; exit 1; }",
+     "test": "vitest run",
+     "check-types": "tsc -p tsconfig.json --noEmit"
+   },
+   "devDependencies": {
+     "typescript": "^5.7.0",
+     "vitest": "^3.0.0",
+     "@types/node": "^22.0.0",
+     "tsx": "^4.19.0"
+   }
+ }
+diff --git a/npm/wasm/holomap_clusterer.d.ts b/npm/wasm/holomap_clusterer.d.ts
+deleted file mode 100644
+index 97f6778..0000000
+--- a/npm/wasm/holomap_clusterer.d.ts
++++ /dev/null
+@@ -1,4 +0,0 @@
+-/* tslint:disable */
+-/* eslint-disable */
+-
+-export function reduce_and_cluster(vectors: Float32Array, n_features: number, n_components: number, n_neighbors: number, min_cluster_size: number, seed: number): Int32Array;
+diff --git a/npm/wasm/holomap_clusterer.js b/npm/wasm/holomap_clusterer.js
+deleted file mode 100644
+index 48a8618..0000000
+--- a/npm/wasm/holomap_clusterer.js
++++ /dev/null
+@@ -1,106 +0,0 @@
+-/* @ts-self-types="./holomap_clusterer.d.ts" */
+-
+-/**
+- * @param {Float32Array} vectors
+- * @param {number} n_features
+- * @param {number} n_components
+- * @param {number} n_neighbors
+- * @param {number} min_cluster_size
+- * @param {number} seed
+- * @returns {Int32Array}
+- */
+-function reduce_and_cluster(vectors, n_features, n_components, n_neighbors, min_cluster_size, seed) {
+-    const ptr0 = passArrayF32ToWasm0(vectors, wasm.__wbindgen_malloc);
+-    const len0 = WASM_VECTOR_LEN;
+-    const ret = wasm.reduce_and_cluster(ptr0, len0, n_features, n_components, n_neighbors, min_cluster_size, seed);
+-    if (ret[3]) {
+-        throw takeFromExternrefTable0(ret[2]);
+-    }
+-    var v2 = getArrayI32FromWasm0(ret[0], ret[1]).slice();
+-    wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+-    return v2;
+-}
+-exports.reduce_and_cluster = reduce_and_cluster;
+-function __wbg_get_imports() {
+-    const import0 = {
+-        __proto__: null,
+-        __wbg_Error_92b29b0548f8b746: function(arg0, arg1) {
+-            const ret = Error(getStringFromWasm0(arg0, arg1));
+-            return ret;
+-        },
+-        __wbindgen_init_externref_table: function() {
+-            const table = wasm.__wbindgen_externrefs;
+-            const offset = table.grow(4);
+-            table.set(0, undefined);
+-            table.set(offset + 0, undefined);
+-            table.set(offset + 1, null);
+-            table.set(offset + 2, true);
+-            table.set(offset + 3, false);
+-        },
+-    };
+-    return {
+-        __proto__: null,
+-        "./holomap_clusterer_bg.js": import0,
+-    };
+-}
+-
+-function getArrayI32FromWasm0(ptr, len) {
+-    ptr = ptr >>> 0;
+-    return getInt32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
+-}
+-
+-let cachedFloat32ArrayMemory0 = null;
+-function getFloat32ArrayMemory0() {
+-    if (cachedFloat32ArrayMemory0 === null || cachedFloat32ArrayMemory0.byteLength === 0) {
+-        cachedFloat32ArrayMemory0 = new Float32Array(wasm.memory.buffer);
+-    }
+-    return cachedFloat32ArrayMemory0;
+-}
+-
+-let cachedInt32ArrayMemory0 = null;
+-function getInt32ArrayMemory0() {
+-    if (cachedInt32ArrayMemory0 === null || cachedInt32ArrayMemory0.byteLength === 0) {
+-        cachedInt32ArrayMemory0 = new Int32Array(wasm.memory.buffer);
+-    }
+-    return cachedInt32ArrayMemory0;
+-}
+-
+-function getStringFromWasm0(ptr, len) {
+-    return decodeText(ptr >>> 0, len);
+-}
+-
+-let cachedUint8ArrayMemory0 = null;
+-function getUint8ArrayMemory0() {
+-    if (cachedUint8ArrayMemory0 === null || cachedUint8ArrayMemory0.byteLength === 0) {
+-        cachedUint8ArrayMemory0 = new Uint8Array(wasm.memory.buffer);
+-    }
+-    return cachedUint8ArrayMemory0;
+-}
+-
+-function passArrayF32ToWasm0(arg, malloc) {
+-    const ptr = malloc(arg.length * 4, 4) >>> 0;
+-    getFloat32ArrayMemory0().set(arg, ptr / 4);
+-    WASM_VECTOR_LEN = arg.length;
+-    return ptr;
+-}
+-
+-function takeFromExternrefTable0(idx) {
+-    const value = wasm.__wbindgen_externrefs.get(idx);
+-    wasm.__externref_table_dealloc(idx);
+-    return value;
+-}
+-
+-let cachedTextDecoder = new TextDecoder('utf-8', { ignoreBOM: true, fatal: true });
+-cachedTextDecoder.decode();
+-function decodeText(ptr, len) {
+-    return cachedTextDecoder.decode(getUint8ArrayMemory0().subarray(ptr, ptr + len));
+-}
+-
+-let WASM_VECTOR_LEN = 0;
+-
+-const wasmPath = `${__dirname}/holomap_clusterer_bg.wasm`;
+-const wasmBytes = require('fs').readFileSync(wasmPath);
+-const wasmModule = new WebAssembly.Module(wasmBytes);
+-let wasmInstance = new WebAssembly.Instance(wasmModule, __wbg_get_imports());
+-let wasm = wasmInstance.exports;
+-wasm.__wbindgen_start();
+diff --git a/npm/wasm/holomap_clusterer_bg.wasm b/npm/wasm/holomap_clusterer_bg.wasm
+deleted file mode 100644
+index 04cd881..0000000
+Binary files a/npm/wasm/holomap_clusterer_bg.wasm and /dev/null differ
+diff --git a/npm/wasm/holomap_clusterer_bg.wasm.d.ts b/npm/wasm/holomap_clusterer_bg.wasm.d.ts
+deleted file mode 100644
+index 48dbb56..0000000
+--- a/npm/wasm/holomap_clusterer_bg.wasm.d.ts
++++ /dev/null
+@@ -1,9 +0,0 @@
+-/* tslint:disable */
+-/* eslint-disable */
+-export const memory: WebAssembly.Memory;
+-export const reduce_and_cluster: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
+-export const __wbindgen_externrefs: WebAssembly.Table;
+-export const __wbindgen_malloc: (a: number, b: number) => number;
+-export const __externref_table_dealloc: (a: number) => void;
+-export const __wbindgen_free: (a: number, b: number, c: number) => void;
+-export const __wbindgen_start: () => void;
+diff --git a/npm/wasm/package.json b/npm/wasm/package.json
+deleted file mode 100644
+index 5bbefff..0000000
+--- a/npm/wasm/package.json
++++ /dev/null
+@@ -1,3 +0,0 @@
+-{
+-  "type": "commonjs"
+-}

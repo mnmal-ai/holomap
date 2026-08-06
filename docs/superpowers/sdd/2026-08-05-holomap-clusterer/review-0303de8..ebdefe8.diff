@@ -1,0 +1,728 @@
+# Review package: 0303de8..ebdefe8
+
+## Commits
+ebdefe8 fix: pre-publish gate failures from final whole-branch review
+
+## Files changed
+ .github/workflows/publish.yml                      |   4 +-
+ Cargo.toml                                         |   2 +-
+ crates/holomap-clusterer/LICENSE-APACHE            | 202 +++++++++++++++++++++
+ crates/holomap-clusterer/LICENSE-MIT               |  21 +++
+ crates/holomap-clusterer/src/pipeline.rs           |  34 ++--
+ .../holomap-clusterer/tests/fixture_regression.rs  |  22 ++-
+ npm/LICENSE-APACHE                                 | 202 +++++++++++++++++++++
+ npm/LICENSE-MIT                                    |  21 +++
+ npm/package.json                                   |   4 +-
+ npm/src/index.ts                                   |   3 +-
+ 10 files changed, 489 insertions(+), 26 deletions(-)
+
+## Diff
+diff --git a/.github/workflows/publish.yml b/.github/workflows/publish.yml
+index ea42b8f..c82cde5 100644
+--- a/.github/workflows/publish.yml
++++ b/.github/workflows/publish.yml
+@@ -28,22 +28,22 @@ jobs:
+     if: "startsWith(github.event.head_commit.message, 'release: v')"
+     runs-on: ubuntu-latest
+     environment: release
+     steps:
+       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+ 
+       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable as of 2026-06-07
+ 
+       # green-gate before anything irreversible
+       - run: cargo fmt --check
+-      - run: cargo clippy --all-targets --all-features -- -D warnings
+-      - run: cargo test --all-features
++      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
++      - run: cargo test --workspace --all-features
+ 
+       - name: Resolve crate version
+         id: ver
+         run: |
+           v=$(cargo metadata --no-deps --format-version 1 \
+                 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
+           echo "version=$v" >> "$GITHUB_OUTPUT"
+           echo "Resolved version: $v"
+ 
+       - name: Guard against re-tagging
+diff --git a/Cargo.toml b/Cargo.toml
+index 249efde..098068a 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -6,21 +6,21 @@ name = "holomap"
+ version = "0.2.0"
+ edition = "2024"
+ rust-version = "1.93"
+ license = "MIT OR Apache-2.0"
+ description = "Deterministic UMAP — the bulk, on the boundary. Same input, same params, same seed: bit-identical embeddings."
+ repository = "https://github.com/mnmal-ai/holomap"
+ keywords = ["umap", "dimension-reduction", "deterministic", "embedding", "manifold"]
+ categories = ["science", "algorithms", "mathematics"]
+ # publish whitelist: the crate ships source + docs only — no dev scripts,
+ # fixtures, CI, or agent-context files
+-include = ["src/**", "examples/**", "README.md", "LICENSE-APACHE", "LICENSE-MIT"]
++include = ["src/**", "examples/**", "/README.md", "/LICENSE-APACHE", "/LICENSE-MIT"]
+ 
+ [dependencies]
+ nalgebra = { version = "0.35.0", default-features = false, features = ["std"] }
+ ndarray = { version = "0.16", optional = true }
+ rand = { version = "0.9", default-features = false }
+ rand_pcg = "0.9"
+ serde = { version = "1", features = ["derive"], optional = true }
+ 
+ [dev-dependencies]
+ proptest = "1.11.0"
+diff --git a/crates/holomap-clusterer/LICENSE-APACHE b/crates/holomap-clusterer/LICENSE-APACHE
+new file mode 100644
+index 0000000..d645695
+--- /dev/null
++++ b/crates/holomap-clusterer/LICENSE-APACHE
+@@ -0,0 +1,202 @@
++
++                                 Apache License
++                           Version 2.0, January 2004
++                        http://www.apache.org/licenses/
++
++   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
++
++   1. Definitions.
++
++      "License" shall mean the terms and conditions for use, reproduction,
++      and distribution as defined by Sections 1 through 9 of this document.
++
++      "Licensor" shall mean the copyright owner or entity authorized by
++      the copyright owner that is granting the License.
++
++      "Legal Entity" shall mean the union of the acting entity and all
++      other entities that control, are controlled by, or are under common
++      control with that entity. For the purposes of this definition,
++      "control" means (i) the power, direct or indirect, to cause the
++      direction or management of such entity, whether by contract or
++      otherwise, or (ii) ownership of fifty percent (50%) or more of the
++      outstanding shares, or (iii) beneficial ownership of such entity.
++
++      "You" (or "Your") shall mean an individual or Legal Entity
++      exercising permissions granted by this License.
++
++      "Source" form shall mean the preferred form for making modifications,
++      including but not limited to software source code, documentation
++      source, and configuration files.
++
++      "Object" form shall mean any form resulting from mechanical
++      transformation or translation of a Source form, including but
++      not limited to compiled object code, generated documentation,
++      and conversions to other media types.
++
++      "Work" shall mean the work of authorship, whether in Source or
++      Object form, made available under the License, as indicated by a
++      copyright notice that is included in or attached to the work
++      (an example is provided in the Appendix below).
++
++      "Derivative Works" shall mean any work, whether in Source or Object
++      form, that is based on (or derived from) the Work and for which the
++      editorial revisions, annotations, elaborations, or other modifications
++      represent, as a whole, an original work of authorship. For the purposes
++      of this License, Derivative Works shall not include works that remain
++      separable from, or merely link (or bind by name) to the interfaces of,
++      the Work and Derivative Works thereof.
++
++      "Contribution" shall mean any work of authorship, including
++      the original version of the Work and any modifications or additions
++      to that Work or Derivative Works thereof, that is intentionally
++      submitted to Licensor for inclusion in the Work by the copyright owner
++      or by an individual or Legal Entity authorized to submit on behalf of
++      the copyright owner. For the purposes of this definition, "submitted"
++      means any form of electronic, verbal, or written communication sent
++      to the Licensor or its representatives, including but not limited to
++      communication on electronic mailing lists, source code control systems,
++      and issue tracking systems that are managed by, or on behalf of, the
++      Licensor for the purpose of discussing and improving the Work, but
++      excluding communication that is conspicuously marked or otherwise
++      designated in writing by the copyright owner as "Not a Contribution."
++
++      "Contributor" shall mean Licensor and any individual or Legal Entity
++      on behalf of whom a Contribution has been received by Licensor and
++      subsequently incorporated within the Work.
++
++   2. Grant of Copyright License. Subject to the terms and conditions of
++      this License, each Contributor hereby grants to You a perpetual,
++      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
++      copyright license to reproduce, prepare Derivative Works of,
++      publicly display, publicly perform, sublicense, and distribute the
++      Work and such Derivative Works in Source or Object form.
++
++   3. Grant of Patent License. Subject to the terms and conditions of
++      this License, each Contributor hereby grants to You a perpetual,
++      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
++      (except as stated in this section) patent license to make, have made,
++      use, offer to sell, sell, import, and otherwise transfer the Work,
++      where such license applies only to those patent claims licensable
++      by such Contributor that are necessarily infringed by their
++      Contribution(s) alone or by combination of their Contribution(s)
++      with the Work to which such Contribution(s) was submitted. If You
++      institute patent litigation against any entity (including a
++      cross-claim or counterclaim in a lawsuit) alleging that the Work
++      or a Contribution incorporated within the Work constitutes direct
++      or contributory patent infringement, then any patent licenses
++      granted to You under this License for that Work shall terminate
++      as of the date such litigation is filed.
++
++   4. Redistribution. You may reproduce and distribute copies of the
++      Work or Derivative Works thereof in any medium, with or without
++      modifications, and in Source or Object form, provided that You
++      meet the following conditions:
++
++      (a) You must give any other recipients of the Work or
++          Derivative Works a copy of this License; and
++
++      (b) You must cause any modified files to carry prominent notices
++          stating that You changed the files; and
++
++      (c) You must retain, in the Source form of any Derivative Works
++          that You distribute, all copyright, patent, trademark, and
++          attribution notices from the Source form of the Work,
++          excluding those notices that do not pertain to any part of
++          the Derivative Works; and
++
++      (d) If the Work includes a "NOTICE" text file as part of its
++          distribution, then any Derivative Works that You distribute must
++          include a readable copy of the attribution notices contained
++          within such NOTICE file, excluding those notices that do not
++          pertain to any part of the Derivative Works, in at least one
++          of the following places: within a NOTICE text file distributed
++          as part of the Derivative Works; within the Source form or
++          documentation, if provided along with the Derivative Works; or,
++          within a display generated by the Derivative Works, if and
++          wherever such third-party notices normally appear. The contents
++          of the NOTICE file are for informational purposes only and
++          do not modify the License. You may add Your own attribution
++          notices within Derivative Works that You distribute, alongside
++          or as an addendum to the NOTICE text from the Work, provided
++          that such additional attribution notices cannot be construed
++          as modifying the License.
++
++      You may add Your own copyright statement to Your modifications and
++      may provide additional or different license terms and conditions
++      for use, reproduction, or distribution of Your modifications, or
++      for any such Derivative Works as a whole, provided Your use,
++      reproduction, and distribution of the Work otherwise complies with
++      the conditions stated in this License.
++
++   5. Submission of Contributions. Unless You explicitly state otherwise,
++      any Contribution intentionally submitted for inclusion in the Work
++      by You to the Licensor shall be under the terms and conditions of
++      this License, without any additional terms or conditions.
++      Notwithstanding the above, nothing herein shall supersede or modify
++      the terms of any separate license agreement you may have executed
++      with Licensor regarding such Contributions.
++
++   6. Trademarks. This License does not grant permission to use the trade
++      names, trademarks, service marks, or product names of the Licensor,
++      except as required for reasonable and customary use in describing the
++      origin of the Work and reproducing the content of the NOTICE file.
++
++   7. Disclaimer of Warranty. Unless required by applicable law or
++      agreed to in writing, Licensor provides the Work (and each
++      Contributor provides its Contributions) on an "AS IS" BASIS,
++      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
++      implied, including, without limitation, any warranties or conditions
++      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
++      PARTICULAR PURPOSE. You are solely responsible for determining the
++      appropriateness of using or redistributing the Work and assume any
++      risks associated with Your exercise of permissions under this License.
++
++   8. Limitation of Liability. In no event and under no legal theory,
++      whether in tort (including negligence), contract, or otherwise,
++      unless required by applicable law (such as deliberate and grossly
++      negligent acts) or agreed to in writing, shall any Contributor be
++      liable to You for damages, including any direct, indirect, special,
++      incidental, or consequential damages of any character arising as a
++      result of this License or out of the use or inability to use the
++      Work (including but not limited to damages for loss of goodwill,
++      work stoppage, computer failure or malfunction, or any and all
++      other commercial damages or losses), even if such Contributor
++      has been advised of the possibility of such damages.
++
++   9. Accepting Warranty or Additional Liability. While redistributing
++      the Work or Derivative Works thereof, You may choose to offer,
++      and charge a fee for, acceptance of support, warranty, indemnity,
++      or other liability obligations and/or rights consistent with this
++      License. However, in accepting such obligations, You may act only
++      on Your own behalf and on Your sole responsibility, not on behalf
++      of any other Contributor, and only if You agree to indemnify,
++      defend, and hold each Contributor harmless for any liability
++      incurred by, or claims asserted against, such Contributor by reason
++      of your accepting any such warranty or additional liability.
++
++   END OF TERMS AND CONDITIONS
++
++   APPENDIX: How to apply the Apache License to your work.
++
++      To apply the Apache License to your work, attach the following
++      boilerplate notice, with the fields enclosed by brackets "[]"
++      replaced with your own identifying information. (Don't include
++      the brackets!)  The text should be enclosed in the appropriate
++      comment syntax for the file format. We also recommend that a
++      file or class name and description of purpose be included on the
++      same "printed page" as the copyright notice for easier
++      identification within third-party archives.
++
++   Copyright [yyyy] [name of copyright owner]
++
++   Licensed under the Apache License, Version 2.0 (the "License");
++   you may not use this file except in compliance with the License.
++   You may obtain a copy of the License at
++
++       http://www.apache.org/licenses/LICENSE-2.0
++
++   Unless required by applicable law or agreed to in writing, software
++   distributed under the License is distributed on an "AS IS" BASIS,
++   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++   See the License for the specific language governing permissions and
++   limitations under the License.
+diff --git a/crates/holomap-clusterer/LICENSE-MIT b/crates/holomap-clusterer/LICENSE-MIT
+new file mode 100644
+index 0000000..0c75b6f
+--- /dev/null
++++ b/crates/holomap-clusterer/LICENSE-MIT
+@@ -0,0 +1,21 @@
++MIT License
++
++Copyright (c) 2026 mnmal-ai
++
++Permission is hereby granted, free of charge, to any person obtaining a copy
++of this software and associated documentation files (the "Software"), to deal
++in the Software without restriction, including without limitation the rights
++to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++copies of the Software, and to permit persons to whom the Software is
++furnished to do so, subject to the following conditions:
++
++The above copyright notice and this permission notice shall be included in all
++copies or substantial portions of the Software.
++
++THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++SOFTWARE.
+diff --git a/crates/holomap-clusterer/src/pipeline.rs b/crates/holomap-clusterer/src/pipeline.rs
+index b73cb6e..2c7def9 100644
+--- a/crates/holomap-clusterer/src/pipeline.rs
++++ b/crates/holomap-clusterer/src/pipeline.rs
+@@ -12,45 +12,53 @@
+ //!
+ //! ## Reduction: `holomap` — seedable deterministic UMAP (git → crates.io on publish)
+ //!
+ //! Replaces the PCA (nalgebra SVD) stage that was the only viable Rust
+ //! reduction in Phase-0: PCA is a linear transform and cannot preserve the
+ //! local neighbourhood density of 1024-d cosine-normalised text embeddings —
+ //! see coda's `docs/2026-06-06-phase0-clusterer-spike-findings.md` for the root-cause
+ //! analysis and the FALLBACK-Python verdict.
+ //!
+ //! holomap (rev 71810a1) is the project's own seedable UMAP-class Rust crate.
+-//! The standalone gate (2026-06-07) produced 36 clusters / 27.2% noise / 7-8
+-//! coherent qualitative samples / byte-identical determinism / 2.46 s — all
+-//! hard gates green.  That result reopens the GO-Rust path.
++//! The standalone gate (`coda/scripts/phase0-clusterer-spike/holomap_gate.py`,
++//! 2026-06-07) — which reduces with holomap but clusters with sklearn's
++//! HDBSCAN, a different clusterer from the one this crate uses — produced 36
++//! clusters / 27.2% noise / 7-8 coherent qualitative samples / byte-identical
++//! determinism / 2.46 s — all hard gates green.  That result reopens the
++//! GO-Rust path. This crate's own all-Rust pipeline (holomap + the `hdbscan`
++//! crate) reproduces 36 clusters / 30.0% noise on the same corpus — see
++//! `tests/fixture_regression.rs`.
+ //!
+ //! ## Pipeline metric
+ //!
+ //! Corpus embeddings are bge-m3 / 1024-d, L2-normalised.  The pipeline
+ //! preserves the normalisation (see `l2_normalise`) and then passes
+ //! `Metric::Cosine` to holomap so the kNN stage uses cosine distance — the
+ //! natural choice for magnitude-normalised text embeddings and matching the
+ //! Python UMAP baseline (`metric='cosine'`).  On the unit sphere cosine
+ //! distance is equivalent to squared Euclidean, but the cosine path gives
+ //! numerically cleaner distances because the dot-product accumulates in f64.
+ //!
+ //! ## umap-learn parameter correspondence
+ //!
+ //! The Python baseline uses:
+ //!   `UMAP(n_components=10, n_neighbors=15, min_dist=0.0, metric='cosine')`
+ //! holomap defaults: n_components=2, n_neighbors=15, min_dist=0.1, metric=Euclidean.
+ //! We override n_components, n_neighbors, metric, and seed from the protocol params.
+ //! min_dist is left at holomap's default (0.1) — NOT 0.0 — because the
+-//! standalone gate confirmed 0.1 passes the hard gates (36/27.2%) while 0.0
+-//! regresses (13/45.2%).  holomap's SGD schedule handles the zero-min-dist
+-//! edge case differently from umap-learn's.  spread (1.0) and n_epochs (auto)
+-//! match umap-learn's defaults and are left at holomap's defaults.
++//! standalone sklearn-HDBSCAN gate (see attribution above) confirmed 0.1
++//! passes the hard gates (36/27.2%) while 0.0 regresses (13/45.2%); this
++//! crate's own all-Rust pipeline agrees at 36/30.0% (see
++//! `tests/fixture_regression.rs`).  holomap's SGD schedule handles the
++//! zero-min-dist edge case differently from umap-learn's.  spread (1.0) and
++//! n_epochs (auto) match umap-learn's defaults and are left at holomap's
++//! defaults.
+ //!
+ //! ## Determinism contract
+ //!
+ //! `hdbscan` serial: deterministic by algorithm (graph-based MST, no RNG).
+ //! `holomap`: seeded PCG RNG, seed supplied from the protocol `seed` field.
+ //! Thread pool: neither crate uses rayon in the paths we call.
+ //! Result: same input + same seed → byte-identical assignments, always.
+ 
+ use crate::protocol::{Request, Response, PROTOCOL_VERSION};
+ use hdbscan::{DistanceMetric, Hdbscan, HdbscanHyperParams};
+@@ -133,24 +141,28 @@ fn l2_normalise(vecs: &[Vec<f32>]) -> Vec<Vec<f32>> {
+             }
+         })
+         .collect()
+ }
+ 
+ /// Reduce via holomap (seedable UMAP-class).
+ ///
+ /// Parameter choices:
+ /// - metric = Cosine: corpus embeddings are bge-m3 / L2-normalised; cosine is
+ ///   the natural distance for text embeddings and matches the Python baseline.
+-/// - min_dist = 0.1 (holomap default): the standalone holomap gate
+-///   (holomap_gate.py, 2026-06-07) confirmed that min_dist=0.1 produces
+-///   36 clusters / 27.2% noise (all hard gates green). Setting min_dist=0.0
+-///   to match the Python baseline's umap-learn call degrades to 13 / 45.2%
++/// - min_dist = 0.1 (holomap default): the standalone gate
++///   (`coda/scripts/phase0-clusterer-spike/holomap_gate.py`, 2026-06-07 —
++///   holomap reduction + sklearn's HDBSCAN, not this crate's clusterer)
++///   confirmed that min_dist=0.1 produces 36 clusters / 27.2% noise (all
++///   hard gates green). This crate's own all-Rust pipeline (holomap +
++///   the `hdbscan` crate) reproduces 36 clusters / 30.0% noise at the same
++///   setting — see `tests/fixture_regression.rs`. Setting min_dist=0.0 to
++///   match the Python baseline's umap-learn call degrades to 13 / 45.2%
+ ///   — holomap's SGD schedule and the Python umap-learn schedule differ in
+ ///   how they handle the zero-min-dist edge case, so the holomap default is
+ ///   the correct setting here (not 0.0).
+ /// - spread = 1.0 (holomap default): matches umap-learn default.
+ /// - n_epochs = None (holomap auto: 500 ≤ 10k pts, 200 above): matches the
+ ///   auto-epoch logic in umap-learn's reference implementation.
+ /// - n_components, n_neighbors, seed: from the protocol params.
+ ///
+ /// Output is a flat embedding reshaped into Vec<Vec<f32>> (n_samples × k).
+ fn holomap_reduce(
+diff --git a/crates/holomap-clusterer/tests/fixture_regression.rs b/crates/holomap-clusterer/tests/fixture_regression.rs
+index 531730b..92f5ebb 100644
+--- a/crates/holomap-clusterer/tests/fixture_regression.rs
++++ b/crates/holomap-clusterer/tests/fixture_regression.rs
+@@ -1,25 +1,29 @@
+ //! Reference-corpus regression gate.
+ //!
+ //! The unit suite proves the code is wired correctly. This proves the
+-//! PIPELINE still behaves: 36 clusters / 27.2% noise on the real 723-row
+-//! corpus, the result the standalone holomap gate established 2026-06-07.
++//! PIPELINE still behaves: this crate's own all-Rust pipeline (holomap +
++//! `hdbscan`) produces 36 clusters / 30.0% noise on the real 723-row
++//! corpus. (A different figure, 27.2% noise, comes from a different
++//! clusterer entirely — see `pipeline.rs`'s module doc for the
++//! attribution — and is not this crate's own result.)
+ //!
+-//! Env-gated because the fixture is 9.4 MB and lives outside this repo.
+-//! Unset HOLOMAP_CLUSTERER_FIXTURE and this skips, exactly like hydra's
+-//! POSTGRES_URL-gated suites.
++//! Env-gated because the fixture is 9.4 MB and lives outside this repo: a
++//! 799-row TSV export of the Claude corpus described in coda's MVD (6
++//! tab-separated columns; col 5 is the text, used to exclude the 76
++//! synthetic perf fixtures; col 6 is a JSON array of 1024 bge-m3 floats).
++//! Point HOLOMAP_CLUSTERER_FIXTURE at your local copy of that export;
++//! unset it and this skips, exactly like hydra's POSTGRES_URL-gated
++//! suites:
+ //!
+-//!   HOLOMAP_CLUSTERER_FIXTURE=/mnt/data/Develop/coda-fixtures/2026-06-05-claude-corpus-799.tsv \
++//!   HOLOMAP_CLUSTERER_FIXTURE=/path/to/2026-06-05-claude-corpus-799.tsv \
+ //!     cargo test -p holomap-clusterer --test fixture_regression -- --nocapture
+-//!
+-//! Fixture format: 6 tab-separated columns; col 5 is the text (used to
+-//! exclude synthetic rows), col 6 is a JSON array of 1024 floats.
+ 
+ use holomap_clusterer::pipeline::run_pipeline;
+ use holomap_clusterer::protocol::{Params, Request, PROTOCOL_VERSION};
+ 
+ /// Load the corpus, excluding the 76 synthetic perf fixtures. Coda's MVD §5
+ /// found those near-duplicates form the densest regions in the whole corpus
+ /// and dominate naive clustering — they must go before the clusterer sees
+ /// the data, not after.
+ fn load_fixture(path: &str) -> Vec<Vec<f32>> {
+     let raw = std::fs::read_to_string(path).expect("fixture readable");
+diff --git a/npm/LICENSE-APACHE b/npm/LICENSE-APACHE
+new file mode 100644
+index 0000000..d645695
+--- /dev/null
++++ b/npm/LICENSE-APACHE
+@@ -0,0 +1,202 @@
++
++                                 Apache License
++                           Version 2.0, January 2004
++                        http://www.apache.org/licenses/
++
++   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
++
++   1. Definitions.
++
++      "License" shall mean the terms and conditions for use, reproduction,
++      and distribution as defined by Sections 1 through 9 of this document.
++
++      "Licensor" shall mean the copyright owner or entity authorized by
++      the copyright owner that is granting the License.
++
++      "Legal Entity" shall mean the union of the acting entity and all
++      other entities that control, are controlled by, or are under common
++      control with that entity. For the purposes of this definition,
++      "control" means (i) the power, direct or indirect, to cause the
++      direction or management of such entity, whether by contract or
++      otherwise, or (ii) ownership of fifty percent (50%) or more of the
++      outstanding shares, or (iii) beneficial ownership of such entity.
++
++      "You" (or "Your") shall mean an individual or Legal Entity
++      exercising permissions granted by this License.
++
++      "Source" form shall mean the preferred form for making modifications,
++      including but not limited to software source code, documentation
++      source, and configuration files.
++
++      "Object" form shall mean any form resulting from mechanical
++      transformation or translation of a Source form, including but
++      not limited to compiled object code, generated documentation,
++      and conversions to other media types.
++
++      "Work" shall mean the work of authorship, whether in Source or
++      Object form, made available under the License, as indicated by a
++      copyright notice that is included in or attached to the work
++      (an example is provided in the Appendix below).
++
++      "Derivative Works" shall mean any work, whether in Source or Object
++      form, that is based on (or derived from) the Work and for which the
++      editorial revisions, annotations, elaborations, or other modifications
++      represent, as a whole, an original work of authorship. For the purposes
++      of this License, Derivative Works shall not include works that remain
++      separable from, or merely link (or bind by name) to the interfaces of,
++      the Work and Derivative Works thereof.
++
++      "Contribution" shall mean any work of authorship, including
++      the original version of the Work and any modifications or additions
++      to that Work or Derivative Works thereof, that is intentionally
++      submitted to Licensor for inclusion in the Work by the copyright owner
++      or by an individual or Legal Entity authorized to submit on behalf of
++      the copyright owner. For the purposes of this definition, "submitted"
++      means any form of electronic, verbal, or written communication sent
++      to the Licensor or its representatives, including but not limited to
++      communication on electronic mailing lists, source code control systems,
++      and issue tracking systems that are managed by, or on behalf of, the
++      Licensor for the purpose of discussing and improving the Work, but
++      excluding communication that is conspicuously marked or otherwise
++      designated in writing by the copyright owner as "Not a Contribution."
++
++      "Contributor" shall mean Licensor and any individual or Legal Entity
++      on behalf of whom a Contribution has been received by Licensor and
++      subsequently incorporated within the Work.
++
++   2. Grant of Copyright License. Subject to the terms and conditions of
++      this License, each Contributor hereby grants to You a perpetual,
++      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
++      copyright license to reproduce, prepare Derivative Works of,
++      publicly display, publicly perform, sublicense, and distribute the
++      Work and such Derivative Works in Source or Object form.
++
++   3. Grant of Patent License. Subject to the terms and conditions of
++      this License, each Contributor hereby grants to You a perpetual,
++      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
++      (except as stated in this section) patent license to make, have made,
++      use, offer to sell, sell, import, and otherwise transfer the Work,
++      where such license applies only to those patent claims licensable
++      by such Contributor that are necessarily infringed by their
++      Contribution(s) alone or by combination of their Contribution(s)
++      with the Work to which such Contribution(s) was submitted. If You
++      institute patent litigation against any entity (including a
++      cross-claim or counterclaim in a lawsuit) alleging that the Work
++      or a Contribution incorporated within the Work constitutes direct
++      or contributory patent infringement, then any patent licenses
++      granted to You under this License for that Work shall terminate
++      as of the date such litigation is filed.
++
++   4. Redistribution. You may reproduce and distribute copies of the
++      Work or Derivative Works thereof in any medium, with or without
++      modifications, and in Source or Object form, provided that You
++      meet the following conditions:
++
++      (a) You must give any other recipients of the Work or
++          Derivative Works a copy of this License; and
++
++      (b) You must cause any modified files to carry prominent notices
++          stating that You changed the files; and
++
++      (c) You must retain, in the Source form of any Derivative Works
++          that You distribute, all copyright, patent, trademark, and
++          attribution notices from the Source form of the Work,
++          excluding those notices that do not pertain to any part of
++          the Derivative Works; and
++
++      (d) If the Work includes a "NOTICE" text file as part of its
++          distribution, then any Derivative Works that You distribute must
++          include a readable copy of the attribution notices contained
++          within such NOTICE file, excluding those notices that do not
++          pertain to any part of the Derivative Works, in at least one
++          of the following places: within a NOTICE text file distributed
++          as part of the Derivative Works; within the Source form or
++          documentation, if provided along with the Derivative Works; or,
++          within a display generated by the Derivative Works, if and
++          wherever such third-party notices normally appear. The contents
++          of the NOTICE file are for informational purposes only and
++          do not modify the License. You may add Your own attribution
++          notices within Derivative Works that You distribute, alongside
++          or as an addendum to the NOTICE text from the Work, provided
++          that such additional attribution notices cannot be construed
++          as modifying the License.
++
++      You may add Your own copyright statement to Your modifications and
++      may provide additional or different license terms and conditions
++      for use, reproduction, or distribution of Your modifications, or
++      for any such Derivative Works as a whole, provided Your use,
++      reproduction, and distribution of the Work otherwise complies with
++      the conditions stated in this License.
++
++   5. Submission of Contributions. Unless You explicitly state otherwise,
++      any Contribution intentionally submitted for inclusion in the Work
++      by You to the Licensor shall be under the terms and conditions of
++      this License, without any additional terms or conditions.
++      Notwithstanding the above, nothing herein shall supersede or modify
++      the terms of any separate license agreement you may have executed
++      with Licensor regarding such Contributions.
++
++   6. Trademarks. This License does not grant permission to use the trade
++      names, trademarks, service marks, or product names of the Licensor,
++      except as required for reasonable and customary use in describing the
++      origin of the Work and reproducing the content of the NOTICE file.
++
++   7. Disclaimer of Warranty. Unless required by applicable law or
++      agreed to in writing, Licensor provides the Work (and each
++      Contributor provides its Contributions) on an "AS IS" BASIS,
++      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
++      implied, including, without limitation, any warranties or conditions
++      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
++      PARTICULAR PURPOSE. You are solely responsible for determining the
++      appropriateness of using or redistributing the Work and assume any
++      risks associated with Your exercise of permissions under this License.
++
++   8. Limitation of Liability. In no event and under no legal theory,
++      whether in tort (including negligence), contract, or otherwise,
++      unless required by applicable law (such as deliberate and grossly
++      negligent acts) or agreed to in writing, shall any Contributor be
++      liable to You for damages, including any direct, indirect, special,
++      incidental, or consequential damages of any character arising as a
++      result of this License or out of the use or inability to use the
++      Work (including but not limited to damages for loss of goodwill,
++      work stoppage, computer failure or malfunction, or any and all
++      other commercial damages or losses), even if such Contributor
++      has been advised of the possibility of such damages.
++
++   9. Accepting Warranty or Additional Liability. While redistributing
++      the Work or Derivative Works thereof, You may choose to offer,
++      and charge a fee for, acceptance of support, warranty, indemnity,
++      or other liability obligations and/or rights consistent with this
++      License. However, in accepting such obligations, You may act only
++      on Your own behalf and on Your sole responsibility, not on behalf
++      of any other Contributor, and only if You agree to indemnify,
++      defend, and hold each Contributor harmless for any liability
++      incurred by, or claims asserted against, such Contributor by reason
++      of your accepting any such warranty or additional liability.
++
++   END OF TERMS AND CONDITIONS
++
++   APPENDIX: How to apply the Apache License to your work.
++
++      To apply the Apache License to your work, attach the following
++      boilerplate notice, with the fields enclosed by brackets "[]"
++      replaced with your own identifying information. (Don't include
++      the brackets!)  The text should be enclosed in the appropriate
++      comment syntax for the file format. We also recommend that a
++      file or class name and description of purpose be included on the
++      same "printed page" as the copyright notice for easier
++      identification within third-party archives.
++
++   Copyright [yyyy] [name of copyright owner]
++
++   Licensed under the Apache License, Version 2.0 (the "License");
++   you may not use this file except in compliance with the License.
++   You may obtain a copy of the License at
++
++       http://www.apache.org/licenses/LICENSE-2.0
++
++   Unless required by applicable law or agreed to in writing, software
++   distributed under the License is distributed on an "AS IS" BASIS,
++   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++   See the License for the specific language governing permissions and
++   limitations under the License.
+diff --git a/npm/LICENSE-MIT b/npm/LICENSE-MIT
+new file mode 100644
+index 0000000..0c75b6f
+--- /dev/null
++++ b/npm/LICENSE-MIT
+@@ -0,0 +1,21 @@
++MIT License
++
++Copyright (c) 2026 mnmal-ai
++
++Permission is hereby granted, free of charge, to any person obtaining a copy
++of this software and associated documentation files (the "Software"), to deal
++in the Software without restriction, including without limitation the rights
++to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++copies of the Software, and to permit persons to whom the Software is
++furnished to do so, subject to the following conditions:
++
++The above copyright notice and this permission notice shall be included in all
++copies or substantial portions of the Software.
++
++THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++SOFTWARE.
+diff --git a/npm/package.json b/npm/package.json
+index 1efdfe9..848f0b0 100644
+--- a/npm/package.json
++++ b/npm/package.json
+@@ -1,25 +1,25 @@
+ {
+   "name": "@mnmal-ai/holomap-clusterer",
+   "version": "0.1.0",
+   "description": "Deterministic reduce→cluster: holomap UMAP + HDBSCAN. One Clusterer interface, wasm and subprocess backends.",
+   "license": "MIT OR Apache-2.0",
+   "repository": { "type": "git", "url": "git+https://github.com/mnmal-ai/holomap.git", "directory": "npm" },
+   "type": "module",
+   "main": "./dist/index.js",
+   "types": "./dist/index.d.ts",
+   "exports": { ".": { "import": "./dist/index.js", "types": "./dist/index.d.ts" } },
+-  "files": ["dist", "wasm"],
++  "files": ["dist", "wasm", "LICENSE-MIT", "LICENSE-APACHE"],
+   "scripts": {
+     "build": "tsc -p tsconfig.json",
+     "build:wasm": "bash ../scripts/build-wasm.sh",
+-    "prepublishOnly": "bash ../scripts/build-wasm.sh",
++    "prepack": "pnpm build:wasm && pnpm build",
+     "pretest": "test -f wasm/holomap_clusterer.js || { echo 'wasm artifact missing — run: pnpm build:wasm'; exit 1; }",
+     "test": "vitest run",
+     "check-types": "tsc -p tsconfig.json --noEmit"
+   },
+   "devDependencies": {
+     "typescript": "^5.7.0",
+     "vitest": "^3.0.0",
+     "@types/node": "^22.0.0",
+     "tsx": "^4.19.0"
+   }
+diff --git a/npm/src/index.ts b/npm/src/index.ts
+index f0e8e04..dacaf2d 100644
+--- a/npm/src/index.ts
++++ b/npm/src/index.ts
+@@ -1,3 +1,4 @@
+-export * from './types.js';
++export type { ClusterParams, ClusterResult, Clusterer } from './types.js';
++export { ClustererError } from './types.js';
+ export { SubprocessClusterer } from './subprocess-clusterer.js';
+ export { WasmClusterer } from './wasm-clusterer.js';
