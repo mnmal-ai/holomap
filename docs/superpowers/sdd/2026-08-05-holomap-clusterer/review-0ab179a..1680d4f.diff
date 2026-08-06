@@ -1,0 +1,330 @@
+# Review package: 0ab179a..1680d4f
+
+## Commits
+1680d4f feat: wasm binding for the clusterer, behind a `wasm` feature
+
+## Files changed
+ .gitignore                                 |  2 +
+ Cargo.lock                                 | 58 +++++++++++++++++++++
+ crates/holomap-clusterer/Cargo.toml        | 11 ++++
+ crates/holomap-clusterer/src/lib.rs        |  1 +
+ crates/holomap-clusterer/src/wasm.rs       | 84 ++++++++++++++++++++++++++++++
+ crates/holomap-clusterer/tests/protocol.rs | 17 ++++++
+ 6 files changed, 173 insertions(+)
+
+## Diff
+diff --git a/.gitignore b/.gitignore
+index 2938df2..8f7b912 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -1,6 +1,8 @@
+ /target
+ __pycache__/
+ 
+ # SDD scratch + worktrees (git-ignored working state, never committed)
+ .superpowers/
+ .worktrees/
++
++crates/holomap-clusterer/pkg/
+diff --git a/Cargo.lock b/Cargo.lock
+index 08dc3a5..399dd5c 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -37,20 +37,26 @@ name = "bit-vec"
+ version = "0.8.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "5e764a1d40d510daf35e07be9eb06e75770908c27d411ee6c92109c9840eaaf7"
+ 
+ [[package]]
+ name = "bitflags"
+ version = "2.13.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "b4388bee8683e3d04af747c73422af53102d2bd24d9eadb6cbc100baef4b43f8"
+ 
++[[package]]
++name = "bumpalo"
++version = "3.20.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
++
+ [[package]]
+ name = "bytemuck"
+ version = "1.25.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "c8efb64bd706a16a1bdde310ae86b351e4d21550d98d056f22f8a7f7a2183fec"
+ 
+ [[package]]
+ name = "cfg-if"
+ version = "1.0.4"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+@@ -184,20 +190,21 @@ dependencies = [
+ ]
+ 
+ [[package]]
+ name = "holomap-clusterer"
+ version = "0.1.0"
+ dependencies = [
+  "hdbscan",
+  "holomap",
+  "serde",
+  "serde_json",
++ "wasm-bindgen",
+ ]
+ 
+ [[package]]
+ name = "id-arena"
+ version = "2.3.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
+ 
+ [[package]]
+ name = "indexmap"
+@@ -509,20 +516,26 @@ version = "1.1.4"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190"
+ dependencies = [
+  "bitflags",
+  "errno",
+  "libc",
+  "linux-raw-sys",
+  "windows-sys",
+ ]
+ 
++[[package]]
++name = "rustversion"
++version = "1.0.23"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
++
+ [[package]]
+ name = "rusty-fork"
+ version = "0.3.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "cc6bf79ff24e648f6da1f8d1f011e9cac26491b619e6b9280f2b47f1774e6ee2"
+ dependencies = [
+  "fnv",
+  "quick-error",
+  "tempfile",
+  "wait-timeout",
+@@ -686,20 +699,65 @@ dependencies = [
+ 
+ [[package]]
+ name = "wasip3"
+ version = "0.4.0+wasi-0.3.0-rc-2026-01-06"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "5428f8bf88ea5ddc08faddef2ac4a67e390b88186c703ce6dbd955e1c145aca5"
+ dependencies = [
+  "wit-bindgen 0.51.0",
+ ]
+ 
++[[package]]
++name = "wasm-bindgen"
++version = "0.2.126"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "4b067c0c11094aef6b7a801c1e34a26affafdf3d051dba08456b868789aaf9a4"
++dependencies = [
++ "cfg-if",
++ "once_cell",
++ "rustversion",
++ "wasm-bindgen-macro",
++ "wasm-bindgen-shared",
++]
++
++[[package]]
++name = "wasm-bindgen-macro"
++version = "0.2.126"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "167ce5e579f6bcf889c4f7175a8a5a585de84e8ff93976ce393efa5f2837aab1"
++dependencies = [
++ "quote",
++ "wasm-bindgen-macro-support",
++]
++
++[[package]]
++name = "wasm-bindgen-macro-support"
++version = "0.2.126"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "f3997c7839262f4ef12cf90b818d6340c18e80f263f1a94bf157d0ec4420380e"
++dependencies = [
++ "bumpalo",
++ "proc-macro2",
++ "quote",
++ "syn",
++ "wasm-bindgen-shared",
++]
++
++[[package]]
++name = "wasm-bindgen-shared"
++version = "0.2.126"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "dc1b4cb0cc549fcf58d7dfc081778139b3d283a081644e833e84682ad71cea24"
++dependencies = [
++ "unicode-ident",
++]
++
+ [[package]]
+ name = "wasm-encoder"
+ version = "0.244.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "990065f2fe63003fe337b932cfb5e3b80e0b4d0f5ff650e6985b1048f62c8319"
+ dependencies = [
+  "leb128fmt",
+  "wasmparser",
+ ]
+ 
+diff --git a/crates/holomap-clusterer/Cargo.toml b/crates/holomap-clusterer/Cargo.toml
+index 472b57d..e17bbdb 100644
+--- a/crates/holomap-clusterer/Cargo.toml
++++ b/crates/holomap-clusterer/Cargo.toml
+@@ -12,10 +12,21 @@ categories = ["science", "algorithms"]
+ serde = { version = "1", features = ["derive"] }
+ serde_json = "1"
+ # rayon disabled deliberately: parallel MST construction would admit
+ # thread-scheduling non-determinism. `serial` gives us .cluster().
+ hdbscan = { version = "0.12", default-features = false, features = ["serial"] }
+ holomap = { version = "0.2", path = "../.." }
+ 
+ [[bin]]
+ name = "holomap-clusterer"
+ path = "src/main.rs"
++
++[features]
++default = []
++wasm = ["dep:wasm-bindgen"]
++
++[dependencies.wasm-bindgen]
++version = "0.2"
++optional = true
++
++[lib]
++crate-type = ["cdylib", "rlib"]
+diff --git a/crates/holomap-clusterer/src/lib.rs b/crates/holomap-clusterer/src/lib.rs
+index bb545bc..2c85c7a 100644
+--- a/crates/holomap-clusterer/src/lib.rs
++++ b/crates/holomap-clusterer/src/lib.rs
+@@ -1,2 +1,3 @@
+ pub mod pipeline;
+ pub mod protocol;
++pub mod wasm;
+diff --git a/crates/holomap-clusterer/src/wasm.rs b/crates/holomap-clusterer/src/wasm.rs
+new file mode 100644
+index 0000000..8b3be60
+--- /dev/null
++++ b/crates/holomap-clusterer/src/wasm.rs
+@@ -0,0 +1,84 @@
++//! WebAssembly binding.
++//!
++//! Wraps `run_pipeline` unchanged. The only logic here is marshalling: a
++//! flat row-major Float32Array in, an Int32Array of labels out.
++//!
++//! `run_pipeline` is deliberately NOT refactored to take a flat slice. One
++//! Vec allocation per row is 723 on the reference corpus and 50k at the
++//! ceiling — nothing beside an O(N²·d) kNN — and changing tested production
++//! code for a micro-optimisation is the wrong trade.
++
++/// holomap's honest envelope, set by its exact O(N²·d) kNN.
++///
++/// A constant rather than a parameter: a configurable ceiling lets a caller
++/// opt into an unbounded run with no way to know what they asked for. The
++/// guard is wasm-only — a blocked worker thread is a wasm-specific hazard,
++/// and the subprocess path is unaffected.
++pub const MAX_ROWS: usize = 50_000;
++
++/// Reshape a flat row-major buffer into rows. Panics on a ragged length;
++/// the caller checks divisibility first and returns a JS error.
++pub fn reshape(flat: &[f32], n_features: usize) -> Vec<Vec<f32>> {
++    assert!(n_features > 0, "n_features must be positive");
++    assert!(
++        flat.len() % n_features == 0,
++        "buffer length {} is not divisible by n_features {}",
++        flat.len(),
++        n_features
++    );
++    flat.chunks_exact(n_features).map(<[f32]>::to_vec).collect()
++}
++
++#[cfg(feature = "wasm")]
++mod bindings {
++    use super::{reshape, MAX_ROWS};
++    use crate::pipeline::run_pipeline;
++    use crate::protocol::{Params, Request, PROTOCOL_VERSION};
++    use wasm_bindgen::prelude::*;
++
++    #[wasm_bindgen]
++    pub fn reduce_and_cluster(
++        vectors: &[f32],
++        n_features: usize,
++        n_components: usize,
++        n_neighbors: usize,
++        min_cluster_size: usize,
++        seed: f64,
++    ) -> Result<Vec<i32>, JsError> {
++        if n_features == 0 {
++            return Err(JsError::new("n_features must be positive"));
++        }
++        if vectors.len() % n_features != 0 {
++            return Err(JsError::new(&format!(
++                "buffer length {} is not divisible by n_features {n_features}",
++                vectors.len()
++            )));
++        }
++        let n_rows = vectors.len() / n_features;
++        if n_rows > MAX_ROWS {
++            return Err(JsError::new(&format!(
++                "{n_rows} rows exceeds MAX_ROWS {MAX_ROWS} — holomap's exact kNN is O(N^2*d); \
++                 use the subprocess backend for corpora this size"
++            )));
++        }
++
++        let resp = run_pipeline(&Request {
++            protocol_version: PROTOCOL_VERSION,
++            vectors: reshape(vectors, n_features),
++            params: Params {
++                n_components,
++                n_neighbors,
++                min_cluster_size,
++                seed: seed as u64,
++            },
++        });
++
++        // The Rust side reports errors in-band for the sidecar's per-line
++        // contract. JS gets a throw instead: a resolved object carrying an
++        // error field invites callers to ignore it.
++        match resp.error {
++            Some(e) => Err(JsError::new(&e)),
++            None => Ok(resp.assignments),
++        }
++    }
++}
+diff --git a/crates/holomap-clusterer/tests/protocol.rs b/crates/holomap-clusterer/tests/protocol.rs
+index 86ad768..8dcf776 100644
+--- a/crates/holomap-clusterer/tests/protocol.rs
++++ b/crates/holomap-clusterer/tests/protocol.rs
+@@ -126,10 +126,27 @@ fn reduced_pipeline_is_deterministic_for_fixed_seed() {
+     assert_eq!(a.assignments, b.assignments, "same seed must give identical labels");
+     // and the structure should still be recoverable after reduction
+     let clusters = {
+         let mut l = a.assignments.clone();
+         l.sort_unstable();
+         l.dedup();
+         l.iter().filter(|&&x| x >= 0).count()
+     };
+     assert_eq!(clusters, 3, "blob structure must survive reduction");
+ }
++
++/// The wasm binding flattens a row-major input into the Vec<Vec<f32>> that
++/// run_pipeline takes. That reshape is the only logic the binding adds, so
++/// it is the only part worth testing on the native side — the wasm-specific
++/// behaviour is covered by the JS suite.
++#[test]
++fn flatten_reshapes_row_major_input() {
++    let flat = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
++    let rows = holomap_clusterer::wasm::reshape(&flat, 3);
++    assert_eq!(rows, vec![vec![1.0, 2.0, 3.0], vec![4.0, 5.0, 6.0]]);
++}
++
++#[test]
++fn flatten_rejects_ragged_input() {
++    let flat = vec![1.0f32, 2.0, 3.0, 4.0, 5.0];
++    assert!(std::panic::catch_unwind(|| holomap_clusterer::wasm::reshape(&flat, 3)).is_err());
++}

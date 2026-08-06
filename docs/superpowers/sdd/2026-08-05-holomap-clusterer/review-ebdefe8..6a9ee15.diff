@@ -1,0 +1,338 @@
+# Review package: ebdefe8..6a9ee15
+
+## Commits
+6a9ee15 fix: align SubprocessClusterer validation with WasmClusterer
+
+## Files changed
+ npm/src/index.ts                     |  2 +-
+ npm/src/subprocess-clusterer.ts      | 10 ++++++++
+ npm/src/types.ts                     | 34 ++++++++++++++++++++++++
+ npm/src/validation.ts                | 34 ++++++++++++++++++++++++
+ npm/src/wasm-clusterer.ts            | 18 ++-----------
+ npm/test/backend-equivalence.test.ts | 50 +++++++++++++++++++++++++++++++++++-
+ npm/test/wasm-clusterer.test.ts      |  6 ++---
+ 7 files changed, 133 insertions(+), 21 deletions(-)
+
+## Diff
+diff --git a/npm/src/index.ts b/npm/src/index.ts
+index dacaf2d..b3e0cb4 100644
+--- a/npm/src/index.ts
++++ b/npm/src/index.ts
+@@ -1,4 +1,4 @@
+ export type { ClusterParams, ClusterResult, Clusterer } from './types.js';
+-export { ClustererError } from './types.js';
++export { ClustererError, WASM_MAX_ROWS } from './types.js';
+ export { SubprocessClusterer } from './subprocess-clusterer.js';
+ export { WasmClusterer } from './wasm-clusterer.js';
+diff --git a/npm/src/subprocess-clusterer.ts b/npm/src/subprocess-clusterer.ts
+index bf7ae06..df02057 100644
+--- a/npm/src/subprocess-clusterer.ts
++++ b/npm/src/subprocess-clusterer.ts
+@@ -1,23 +1,33 @@
+ import { spawn } from 'node:child_process';
+ import { type ClusterParams, type ClusterResult, ClustererError, type Clusterer, type ProtocolResponse } from './types.js';
++import { validateClusterInput } from './validation.js';
+ 
+ export class SubprocessClusterer implements Clusterer {
+   readonly #argv: readonly string[];
+ 
+   /** argv[0] = executable, rest = args. E.g. ['.venv/bin/python', 'clusterer.py']. */
+   constructor(argv: readonly string[]) {
+     if (argv.length === 0) throw new ClustererError('empty clusterer argv');
+     this.#argv = argv;
+   }
+ 
+   async cluster(vectors: readonly Float32Array[], params: ClusterParams): Promise<ClusterResult> {
++    // Reject the same inputs WasmClusterer rejects, with the same message,
++    // before spawning anything. Without this, bad input still gets rejected
++    // — the child validates empty input and ragged dimensions itself, and a
++    // bad seed either fails child-side JSON deserialisation or, worse, gets
++    // forwarded as a real seed and crashes the child — but every one of
++    // those paths costs a process spawn and produces a different message
++    // than the wasm backend gives for the identical input.
++    validateClusterInput(vectors, params);
++
+     const request = JSON.stringify({
+       protocol_version: 1,
+       vectors: vectors.map((v) => [...v]),
+       params: {
+         n_components: params.nComponents,
+         n_neighbors: params.nNeighbors,
+         min_cluster_size: params.minClusterSize,
+         seed: params.seed
+       }
+     });
+diff --git a/npm/src/types.ts b/npm/src/types.ts
+index 3860914..cbbb318 100644
+--- a/npm/src/types.ts
++++ b/npm/src/types.ts
+@@ -13,20 +13,54 @@ export interface ClusterResult {
+    * Never populated by either backend: hdbscan 0.12's .cluster() returns
+    * labels only. Present for protocol forward-compatibility.
+    */
+   probabilities?: readonly number[];
+ }
+ 
+ export interface Clusterer {
+   cluster(vectors: readonly Float32Array[], params: ClusterParams): Promise<ClusterResult>;
+ }
+ 
++/**
++ * `WasmClusterer` rejects more than 50,000 input rows (`MAX_ROWS` in
++ * `crates/holomap-clusterer/src/wasm.rs`) with a `ClustererError` naming
++ * `MAX_ROWS` in the message. This is deliberately **wasm-only** and is not
++ * mirrored by the shared validator, so `SubprocessClusterer` has no row
++ * ceiling at all.
++ *
++ * Why the limit exists for wasm: the exact O(N^2*d) kNN runs synchronously
++ * inside the wasm call, on whatever thread invoked it. Consumers are
++ * expected to run `WasmClusterer` inside a `worker_threads` Worker (see
++ * `WasmClusterer`'s doc comment) precisely because a large batch blocks that
++ * thread for tens of seconds — the ceiling exists to fail fast rather than
++ * let a caller accidentally hang a worker for an unbounded amount of time.
++ *
++ * Why it does not apply to the subprocess backend: `SubprocessClusterer`
++ * already runs the same O(N^2*d) algorithm in a separate OS process, not on
++ * any thread of the calling Node process. A slow run there costs wall-clock
++ * time, not a blocked worker — the specific hazard `MAX_ROWS` exists to
++ * prevent doesn't apply. Imposing the wasm ceiling on the subprocess backend
++ * anyway would reject inputs the subprocess backend can actually handle, for
++ * a reason that has nothing to do with subprocesses.
++ *
++ * If you need a row ceiling on `SubprocessClusterer` (e.g. to bound wall-clock
++ * cost rather than thread-blocking), that is a distinct policy decision for
++ * the caller to make — it is not implied by, or copied from, this constant.
++ *
++ * This value is kept in sync with `wasm.rs::MAX_ROWS` by hand — it is not
++ * read from the wasm binary. `test/wasm-clusterer.test.ts` generates
++ * `WASM_MAX_ROWS + 1` rows and asserts the wasm call itself rejects them, so
++ * a drift between the two shows up as a test failure rather than a silently
++ * wrong number here.
++ */
++export const WASM_MAX_ROWS = 50_000;
++
+ export class ClustererError extends Error {
+   constructor(detail: string) {
+     super(detail);
+     this.name = 'ClustererError';
+   }
+ }
+ 
+ export interface ProtocolResponse {
+   protocol_version: number;
+   assignments: number[];
+diff --git a/npm/src/validation.ts b/npm/src/validation.ts
+new file mode 100644
+index 0000000..ec7e8af
+--- /dev/null
++++ b/npm/src/validation.ts
+@@ -0,0 +1,34 @@
++import { type ClusterParams, ClustererError } from './types.js';
++
++/**
++ * Input validation shared by every `Clusterer` backend.
++ *
++ * Lives in its own module rather than inside either backend so neither one
++ * imports the other to get it, and so a third backend picks it up the same
++ * way. `WasmClusterer` and `SubprocessClusterer` both call this before doing
++ * any backend-specific work — the wasm binding rejects this input on its own
++ * (these checks mirror it so the message doesn't depend on which backend
++ * ran), and the subprocess's child process has no opportunity to reject it
++ * differently, or at all.
++ */
++export function validateClusterInput(vectors: readonly Float32Array[], params: ClusterParams): void {
++  if (vectors.length === 0) throw new ClustererError('empty input');
++
++  const nFeatures = vectors[0]!.length;
++  if (vectors.some((v) => v.length !== nFeatures)) {
++    throw new ClustererError('vector dimensions inconsistent');
++  }
++
++  // Every backend eventually turns this into a fixed-width integer (the wasm
++  // binding casts to u64 in Rust; the subprocess protocol deserialises into
++  // a u64 field). That cast/deserialisation saturates or fails in ways that
++  // differ by backend — NaN and negatives silently become 0 for wasm, and
++  // the subprocess just returns a generic deserialisation error — and
++  // anything above 2^53 has already lost precision as a JS number. A seed
++  // that quietly becomes a different seed is the worst failure this API can
++  // have — determinism is the whole product — so reject rather than coerce,
++  // identically on both backends.
++  if (!Number.isInteger(params.seed) || params.seed < 0 || params.seed > Number.MAX_SAFE_INTEGER) {
++    throw new ClustererError(`seed must be a non-negative integer <= 2^53-1, got ${params.seed}`);
++  }
++}
+diff --git a/npm/src/wasm-clusterer.ts b/npm/src/wasm-clusterer.ts
+index a66c4a2..26c2580 100644
+--- a/npm/src/wasm-clusterer.ts
++++ b/npm/src/wasm-clusterer.ts
+@@ -1,17 +1,18 @@
+ import { createRequire } from 'node:module';
+ import {
+   type ClusterParams,
+   type ClusterResult,
+   ClustererError,
+   type Clusterer
+ } from './types.js';
++import { validateClusterInput } from './validation.js';
+ 
+ // wasm-pack --target nodejs emits CJS glue. createRequire loads it from an
+ // ESM module without a bundler step, and resolves the .wasm relative to the
+ // package's own directory so consumers never handle asset paths.
+ const require = createRequire(import.meta.url);
+ 
+ interface WasmModule {
+   reduce_and_cluster(
+     vectors: Float32Array,
+     nFeatures: number,
+@@ -35,37 +36,22 @@ export class WasmClusterer implements Clusterer {
+ 
+   #load(): WasmModule {
+     this.#module ??= require('../wasm/holomap_clusterer.js') as WasmModule;
+     return this.#module;
+   }
+ 
+   async cluster(
+     vectors: readonly Float32Array[],
+     params: ClusterParams
+   ): Promise<ClusterResult> {
+-    if (vectors.length === 0) throw new ClustererError('empty input');
+-
++    validateClusterInput(vectors, params);
+     const nFeatures = vectors[0]!.length;
+-    if (vectors.some((v) => v.length !== nFeatures)) {
+-      throw new ClustererError('vector dimensions inconsistent');
+-    }
+-
+-    // The Rust binding takes seed as f64 and casts to u64. That cast
+-    // saturates: NaN and negatives silently become 0, and anything above
+-    // 2^53 has already lost precision as a JS number. A seed that quietly
+-    // becomes a different seed is the worst failure this API can have —
+-    // determinism is the whole product — so reject rather than coerce.
+-    if (!Number.isInteger(params.seed) || params.seed < 0 || params.seed > Number.MAX_SAFE_INTEGER) {
+-      throw new ClustererError(
+-        `seed must be a non-negative integer <= 2^53-1, got ${params.seed}`
+-      );
+-    }
+ 
+     // Flatten to row-major. One copy — negligible beside an O(N^2*d) kNN,
+     // and it keeps the production Clusterer signature unchanged.
+     const flat = new Float32Array(vectors.length * nFeatures);
+     for (let i = 0; i < vectors.length; i++) flat.set(vectors[i]!, i * nFeatures);
+ 
+     let assignments: Int32Array;
+     try {
+       assignments = this.#load().reduce_and_cluster(
+         flat,
+diff --git a/npm/test/backend-equivalence.test.ts b/npm/test/backend-equivalence.test.ts
+index f9d3284..05b7ccc 100644
+--- a/npm/test/backend-equivalence.test.ts
++++ b/npm/test/backend-equivalence.test.ts
+@@ -1,12 +1,12 @@
+ import { describe, expect, it } from 'vitest';
+-import { SubprocessClusterer, WasmClusterer } from '../src/index.js';
++import { type ClusterParams, ClustererError, SubprocessClusterer, WasmClusterer } from '../src/index.js';
+ 
+ const BIN = new URL('../../target/release/holomap-clusterer', import.meta.url).pathname;
+ const PARAMS = { nComponents: 5, nNeighbors: 15, minClusterSize: 5, seed: 1234 };
+ 
+ function blobs(dims: number): Float32Array[] {
+   let state = 42n;
+   const next = () => {
+     state = (state * 6364136223846793005n + 1442695040888963407n) & 0xffffffffffffffffn;
+     return Number(state >> 33n) / 0xffffffff - 0.5;
+   };
+@@ -40,10 +40,58 @@ describe('backend equivalence', () => {
+     const wasm = await new WasmClusterer().cluster(vectors, PARAMS);
+     const native = await new SubprocessClusterer([BIN]).cluster(vectors, PARAMS);
+ 
+     const count = (a: readonly number[]) => new Set(a.filter((l) => l >= 0)).size;
+     const noise = (a: readonly number[]) => a.filter((l) => l === -1).length;
+ 
+     expect(count(wasm.assignments)).toBe(count(native.assignments));
+     expect(Math.abs(noise(wasm.assignments) - noise(native.assignments))).toBeLessThanOrEqual(2);
+   });
+ });
++
++/**
++ * A rejection is part of the `Clusterer` contract too: both backends
++ * implement the same interface, so a caller must get the same
++ * `ClustererError` for the same bad input regardless of which backend is
++ * configured. Before the shared validator existed, `SubprocessClusterer`
++ * forwarded bad input to the child process and surfaced whatever came back
++ * (a serde deserialisation error, or — for a seed above
++ * Number.MAX_SAFE_INTEGER — a raw process crash), which is both slower and a
++ * different error than `WasmClusterer` raises for the identical input.
++ *
++ * Each case below asks WasmClusterer what it throws (its behaviour is the
++ * fixed reference — this suite must never be the thing that changes it) and
++ * asserts SubprocessClusterer throws a `ClustererError` with the exact same
++ * message, without ever spawning a process that could fail for a different
++ * reason.
++ */
++async function rejection(
++  clusterer: { cluster(v: readonly Float32Array[], p: ClusterParams): Promise<unknown> },
++  vectors: readonly Float32Array[],
++  params: ClusterParams
++): Promise<ClustererError> {
++  try {
++    await clusterer.cluster(vectors, params);
++  } catch (e) {
++    if (e instanceof ClustererError) return e;
++    throw new Error(`expected a ClustererError, got ${e instanceof Error ? e.constructor.name : String(e)}: ${e}`);
++  }
++  throw new Error('expected cluster() to reject, but it resolved');
++}
++
++describe('backend rejection parity', () => {
++  const cases: Array<[name: string, vectors: readonly Float32Array[], params: ClusterParams]> = [
++    ['empty input', [], PARAMS],
++    ['ragged vector dimensions', [new Float32Array(8), new Float32Array(5)], PARAMS],
++    ['seed NaN', [new Float32Array(8)], { ...PARAMS, seed: Number.NaN }],
++    ['seed negative', [new Float32Array(8)], { ...PARAMS, seed: -1 }],
++    ['seed non-integer', [new Float32Array(8)], { ...PARAMS, seed: 1.5 }],
++    ['seed above Number.MAX_SAFE_INTEGER', [new Float32Array(8)], { ...PARAMS, seed: 2 ** 53 }]
++  ];
++
++  it.each(cases)('%s: both backends reject with the same message', async (_name, vectors, params) => {
++    const wasmError = await rejection(new WasmClusterer(), vectors, params);
++    const subprocessError = await rejection(new SubprocessClusterer([BIN]), vectors, params);
++
++    expect(subprocessError.message).toBe(wasmError.message);
++  });
++});
+diff --git a/npm/test/wasm-clusterer.test.ts b/npm/test/wasm-clusterer.test.ts
+index f8aea19..e82ce65 100644
+--- a/npm/test/wasm-clusterer.test.ts
++++ b/npm/test/wasm-clusterer.test.ts
+@@ -1,12 +1,12 @@
+ import { describe, expect, it } from 'vitest';
+-import { ClustererError, WasmClusterer } from '../src/index.js';
++import { ClustererError, WASM_MAX_ROWS, WasmClusterer } from '../src/index.js';
+ 
+ function blobs(): Float32Array[] {
+   let state = 42n;
+   const next = () => {
+     state = (state * 6364136223846793005n + 1442695040888963407n) & 0xffffffffffffffffn;
+     return Number(state >> 33n) / 0xffffffff - 0.5;
+   };
+   const out: Float32Array[] = [];
+   for (let blob = 0; blob < 3; blob++) {
+     for (let i = 0; i < 30; i++) {
+@@ -38,15 +38,15 @@ describe('WasmClusterer', () => {
+     const ragged = [new Float32Array(8), new Float32Array(5)];
+     await expect(new WasmClusterer().cluster(ragged, PARAMS)).rejects.toThrow(ClustererError);
+   });
+ 
+   it.each([Number.NaN, -1, 1.5, 2 ** 53])('rejects seed %p rather than coercing it', async (seed) => {
+     await expect(
+       new WasmClusterer().cluster(blobs(), { ...PARAMS, seed })
+     ).rejects.toThrow(/seed must be/);
+   });
+ 
+-  it('throws ClustererError above MAX_ROWS', async () => {
+-    const many = Array.from({ length: 50_001 }, () => new Float32Array(2));
++  it('throws ClustererError above WASM_MAX_ROWS', async () => {
++    const many = Array.from({ length: WASM_MAX_ROWS + 1 }, () => new Float32Array(2));
+     await expect(new WasmClusterer().cluster(many, PARAMS)).rejects.toThrow(/MAX_ROWS/);
+   });
+ });
