@@ -13,3 +13,6 @@ npm/dist/
 
 # wasm build output — produced by scripts/build-wasm.sh, never committed
 npm/wasm/
+
+# Machine-specific Hydra MCP wiring (absolute paths + per-project agent identity) — never commit
+.mcp.json
