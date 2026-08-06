@@ -30,21 +30,62 @@ function blobs(dims: number): Float32Array[] {
  * Requiring wasm to match native more tightly than native matches itself
  * would be an unfair gate.
  *
- * What must hold is that both backends recover the same STRUCTURE. If this
- * ever fails, the fix is not to loosen it — it is to record the backend in
- * provenance so a switch is observable, and investigate the divergence.
+ * READ THIS BEFORE TIGHTENING IT. An earlier version asserted the two
+ * backends produce the SAME cluster count, with a noise delta of at most 2
+ * rows. That assertion passed, and it was misleading: this fixture is three
+ * well-separated synthetic blobs, which is easy enough that both backends
+ * trivially agree. On the real 723-row corpus they do not — measured
+ * 2026-08-05, 36 vs 37 clusters on raw input and 33 vs 35 on normalised.
+ * The old bar would have failed on real data while passing here, so it was
+ * not gating what it claimed to.
+ *
+ * The underlying reason is that this pipeline is DETERMINISTIC but not
+ * numerically STABLE. Perturbations far below any meaningful precision move
+ * the result: on that same corpus, merely L2-normalising the input before
+ * the call — mathematically a no-op, since the pipeline normalises
+ * internally — shifts it by up to 3 clusters, and the shift depends on
+ * whether the norm was accumulated in f32 or f64. See
+ * `crates/holomap-clusterer/tests/fixture_regression.rs` for the measured
+ * table.
+ *
+ * So this test gates what it CAN gate honestly: on an easy fixture with
+ * known planted structure, each backend independently recovers that
+ * structure, and neither errors or returns nonsense. That is enough to
+ * catch the failure mode that actually threatens the wasm binding — a
+ * marshalling or build bug — which produces garbage or a throw, not a
+ * one-cluster difference.
+ *
+ * The cross-backend delta is REPORTED, not asserted. If you want a real
+ * agreement bar, it belongs on the real corpus in the Rust suite, expressed
+ * as the MVD band, not here.
  */
 describe('backend equivalence', () => {
-  it('both backends recover the same cluster structure', async () => {
+  const count = (a: readonly number[]) => new Set(a.filter((l) => l >= 0)).size;
+  const noise = (a: readonly number[]) => a.filter((l) => l === -1).length;
+
+  it('each backend independently recovers the planted structure', async () => {
     const vectors = blobs(32);
     const wasm = await new WasmClusterer().cluster(vectors, PARAMS);
     const native = await new SubprocessClusterer([BIN]).cluster(vectors, PARAMS);
 
-    const count = (a: readonly number[]) => new Set(a.filter((l) => l >= 0)).size;
-    const noise = (a: readonly number[]) => a.filter((l) => l === -1).length;
+    // The fixture plants 3 blobs of 30. Allow +/-1: HDBSCAN may split or
+    // absorb a blob edge, and pinning exactly 3 would be pinning one point
+    // of a sensitive function again, just at a different place.
+    for (const [name, result] of [
+      ['wasm', wasm],
+      ['native', native]
+    ] as const) {
+      expect(result.assignments, `${name}: one label per input row`).toHaveLength(vectors.length);
+      expect(count(result.assignments), `${name}: recovers ~3 planted blobs`).toBeGreaterThanOrEqual(2);
+      expect(count(result.assignments), `${name}: recovers ~3 planted blobs`).toBeLessThanOrEqual(4);
+      expect(noise(result.assignments), `${name}: most rows are not noise`).toBeLessThan(vectors.length / 2);
+    }
 
-    expect(count(wasm.assignments)).toBe(count(native.assignments));
-    expect(Math.abs(noise(wasm.assignments) - noise(native.assignments))).toBeLessThanOrEqual(2);
+    // Informational — see the block comment. Not a bar.
+    console.log(
+      `backend delta: ${Math.abs(count(wasm.assignments) - count(native.assignments))} clusters, ` +
+        `${Math.abs(noise(wasm.assignments) - noise(native.assignments))} noise rows`
+    );
   });
 });
 

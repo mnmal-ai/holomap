@@ -56,13 +56,25 @@ What the contract buys a consumer:
 
 Both backends run the identical Rust pipeline — one in-process, one out — so the contract is the same on either.
 
+### What determinism does *not* give you
+
+It is a guarantee about identical input, not similar input. This pipeline is deterministic but **not numerically stable**: HDBSCAN is a density algorithm, so a perturbation far below any meaningful precision moves points across cluster boundaries.
+
+Concretely — on a 723-row reference corpus, L2-normalising the vectors before calling `cluster()` shifts the result by up to 3 clusters and 20 noise rows, *and the shift depends on whether you accumulated the norm in f32 or f64*. Normalising first is mathematically a no-op; the pipeline normalises internally anyway. Only the rounding differs.
+
+So: pin your preprocessing as carefully as you pin your seed. A refactor that changes where you normalise, or a library that accumulates differently, will move your clustering even though nothing about the algorithm changed. And if you compare against a published figure, check which input regime produced it — a consumer normalising at its boundary is not in the same regime as this project's raw-input baseline, and the gap is not a defect. The measured table is in `crates/holomap-clusterer/README.md`.
+
 ## Backend identity is provenance, not a footnote
 
 **If you persist cluster results, record which backend and version produced them.**
 
 The two backends will not necessarily agree byte-for-byte, and that isn't a defect to engineer away. `holomap` promises only *structural* identity cross-platform — floats may differ at ULP level — so native-on-Linux and native-on-macOS may already differ from each other. HDBSCAN is a density algorithm, so small coordinate perturbations can flip boundary points. Demanding wasm match native more tightly than native matches itself would be an unfair gate.
 
-So the gate is structural: `test/backend-equivalence.test.ts` asserts both backends recover the same cluster count and a noise delta of at most 2 rows. And the honest mitigation is visibility — a stored clustering that records its backend turns a backend switch into an observable event rather than a silent reprocessing.
+On the real 723-row corpus the two backends differ by 1–2 clusters, measured. So `test/backend-equivalence.test.ts` gates what it honestly can — that each backend independently recovers the planted structure of an easy synthetic fixture without erroring — and *reports* the cross-backend delta rather than asserting a bound on it. That catches the failure mode which actually threatens the binding (a marshalling or build bug produces garbage or a throw, not a one-cluster difference), and it does not pretend to a tightness that real data contradicts.
+
+An earlier version of that test asserted identical cluster counts. It passed, and it was misleading: three well-separated synthetic blobs are easy enough that both backends trivially agree, so the bar would have failed on real data while passing in CI.
+
+The honest mitigation is visibility — a stored clustering that records its backend turns a backend switch into an observable event rather than a silent reprocessing.
 
 Rejections are held to a stricter bar: the same bad input must produce the *same* `ClustererError` message on both backends, verified case by case. A shared validator runs before either backend does any work — so `SubprocessClusterer` rejects bad input without paying for a spawn, and the caller's error handling doesn't depend on which backend is configured.
 
@@ -146,7 +158,17 @@ pnpm test
 
 `pretest` fails with a fix-it message if the artifact is missing, rather than letting the suite fail obscurely.
 
-Use the script, not `wasm-pack` directly: `wasm-pack` 0.15.0 is broken against cargo 1.95.0 (it calls the removed `cargo build --out-dir`), and the script also derives the `wasm-bindgen-cli` version from `Cargo.lock` — CLI and crate versions must match exactly or the generated glue won't load.
+Use the script, not `wasm-pack` directly: `wasm-pack` 0.15.0 is broken against cargo 1.95.0 (it calls the removed `cargo build --out-dir`), and the script also derives the `wasm-bindgen-cli` version from `Cargo.lock` — CLI and crate versions must match exactly or the generated glue won't load. It preflights the two things that otherwise fail deep inside cargo with unhelpful messages: an unresolvable `cargo` shim, and a missing `wasm32-unknown-unknown` target. Both cost a first-time consumer real time before the checks existed.
+
+This repo deliberately does **not** pin a Rust toolchain. A `mise.toml` was tried and reverted: on a machine where rustup already provides a working toolchain, it made mise take over, fail to install its own copy, and leave `cargo` unusable — worse than the confusing message it was meant to fix. A rustup-native `rust-toolchain.toml` is probably the right answer and hasn't been validated. Meanwhile the preflight names the fix.
+
+### The `.wasm` is not byte-reproducible
+
+Two builds of the same source produce artifacts of identical size that differ by a **single byte** (measured: 1 byte out of 261,037, across two checkouts of the same commit). It is not embedded build paths — those would change the size, and none appear in the binary.
+
+This does not affect behaviour: both artifacts produce identical clusterings, verified by running the suite against each. It is called out only because "determinism is the product" invites the stronger reading. The determinism contract is about the *pipeline's output* for a given input and seed. It has never been a claim about bit-identical build artifacts, and this package does not make one.
+
+If you need to verify you're running the expected build, hash what you ship rather than expecting a rebuild to match it.
 
 ## License
 
