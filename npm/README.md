@@ -147,6 +147,17 @@ Supply the auth token from a source pnpm trusts — `~/.npmrc` locally, a CI aut
 
 **Not yet published.** `0.1.0` is unreleased on purpose: freezing a public API before any real integration has exercised it buys nothing. Consume it via `file:`/`link:` from a checkout until a consumer has actually run it in anger.
 
+### Cutting a release
+
+`.github/workflows/publish-npm.yml` owns it. Ride a `release/npm-vX.Y.Z` branch, bump the version in `npm/package.json`, and set the merge commit subject to `release: npm vX.Y.Z`. The workflow gates on the full suite, refuses a version already on the registry, publishes, and pushes a `holomap-clusterer-vX.Y.Z` tag. **Do not tag by hand** — the workflow owns the tag.
+
+Two things that are easy to get wrong:
+
+- **The trigger is `release: npm v`, not `release: v`.** The latter belongs to `publish.yml`, which releases the `holomap` *crate* to crates.io. The two artifacts version independently — the crate is 0.2.0 while this package is 0.1.0 — so one trigger cannot serve both. They are mutually exclusive by construction, since `release: n…` never matches `release: v`.
+- **The tag is `holomap-clusterer-vX.Y.Z`.** Plain `vX.Y.Z` is the crate's namespace and already holds `v0.1.0` and `v0.2.0`; an npm 0.1.0 release tagged that way would collide with the crate's first release.
+
+A note on visibility: this repo is public, and GitHub Packages npm packages inherit repository visibility, so `publishConfig.access: restricted` — an npmjs concept — does **not** make this package private. It will be publicly listed. It is not casually installable, though: the GitHub Packages npm registry demands an authenticated token for every read, public packages included. Genuine privacy would require publishing from a private repository, and no workflow setting can substitute for that.
+
 ## Building the wasm artifact
 
 `npm/wasm/` is **not** in the repository — it is build output, produced by CI and by `prepack`. To build it locally:
