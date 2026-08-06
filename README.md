@@ -2,21 +2,7 @@
 
 [![crates.io](https://img.shields.io/crates/v/holomap.svg)](https://crates.io/crates/holomap)
 [![docs.rs](https://docs.rs/holomap/badge.svg)](https://docs.rs/holomap)
-
-<!-- The CI badge was removed when this repository went private (2026-08-05).
-     GitHub serves workflow badges only to viewers who can see the repo, so it
-     rendered as a broken image on crates.io and docs.rs — the two places this
-     README is read by people who cannot open the repository. Restore it if
-     the repo goes public again:
-     [![CI](https://github.com/mnmal-ai/holomap/actions/workflows/ci.yml/badge.svg)](https://github.com/mnmal-ai/holomap/actions/workflows/ci.yml)
--->
-
-> **Note on the source.** The published crate is open — `cargo add holomap`,
-> and the full source ships in the crates.io tarball and renders on
-> [docs.rs](https://docs.rs/holomap). The GitHub repository is currently
-> private while the surrounding work settles, so the `repository` link on
-> crates.io will not resolve for you. Nothing about the crate itself is
-> restricted, and the published versions are unaffected.
+[![CI](https://github.com/mnmal-ai/holomap/actions/workflows/ci.yml/badge.svg)](https://github.com/mnmal-ai/holomap/actions/workflows/ci.yml)
 
 **Deterministic UMAP in Rust.** *The bulk, on the boundary.*
 

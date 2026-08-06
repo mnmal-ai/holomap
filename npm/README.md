@@ -137,7 +137,7 @@ The package exports both classes and takes no view on how you select one. The pa
 
 ## Install
 
-`@mnmal-ai/*` packages resolve from GitHub Packages, and this one is **restricted** like every other. Route the scope in your `.npmrc`:
+`@mnmal-ai/*` packages resolve from GitHub Packages. Route the scope in your `.npmrc`:
 
 ```
 @mnmal-ai:registry=https://npm.pkg.github.com
@@ -160,9 +160,15 @@ Two things that are easy to get wrong:
 - **The trigger is `release: npm v`, not `release: v`.** The latter belongs to `publish.yml`, which releases the `holomap` *crate* to crates.io. The two artifacts version independently — the crate is 0.2.0 while this package is 0.1.0 — so one trigger cannot serve both. They are mutually exclusive by construction, since `release: n…` never matches `release: v`.
 - **The tag is `holomap-clusterer-vX.Y.Z`.** Plain `vX.Y.Z` is the crate's namespace and already holds `v0.1.0` and `v0.2.0`; an npm 0.1.0 release tagged that way would collide with the crate's first release.
 
-A note on visibility: GitHub Packages npm packages inherit **repository** visibility, and `publishConfig.access: restricted` is an npmjs concept that does not override it. This repository is private, so the package is genuinely private — not merely token-gated.
+### A note on visibility, corrected by observation
 
-That ordering is worth remembering if the repo's visibility ever changes: it was public until 2026-08-05, and while it was, no workflow or `publishConfig` setting could have made the package private. The repository is the control, not the package config.
+A GitHub Packages npm package inherits **repository** visibility **at publish time**, and `publishConfig.access` — an npmjs concept — does not override it. That much held.
+
+What did *not* hold is the assumption that it tracks the repository afterwards. This repo was private when `0.1.0` was published and went public shortly after; the package **stayed private**, and there is no REST endpoint to change it (`PATCH /orgs/{org}/packages/npm/{name}` returns 404). Package visibility is a one-time inheritance plus a manual setting, not a mirror.
+
+Practically it makes little difference either way: the GitHub Packages npm registry demands an authenticated token for **every** read, public packages included. "Public" there means listed, not installable-by-strangers.
+
+The consequence worth keeping: if you want a package's visibility to differ from what it inherited, that is a deliberate act in the package settings UI — not something a workflow, `publishConfig`, or a later repo change will do for you.
 
 ## Building the wasm artifact
 
