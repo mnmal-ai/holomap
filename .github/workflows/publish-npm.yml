@@ -1,0 +1,145 @@
+name: publish-npm
+
+# Publishes @mnmal-ai/holomap-clusterer to GitHub Packages.
+#
+# SEPARATE from publish.yml, which owns the crates.io release of the `holomap`
+# crate. The two artifacts version independently — holomap is 0.2.0 while the
+# npm package is 0.1.0 — so one trigger cannot serve both without guessing
+# which version a release commit meant.
+#
+# TRIGGER: a merge to main whose commit subject starts with `release: npm v`.
+# The crate's workflow fires on `release: v`, and the two are mutually
+# exclusive because "release: n..." never matches "release: v". House
+# convention otherwise unchanged: ride a `release/npm-vX.Y.Z` branch, bump the
+# version in npm/package.json on it, set the merge commit subject explicitly,
+# and let this workflow own the tag. DO NOT tag by hand.
+#
+# TAG: `holomap-clusterer-vX.Y.Z`, deliberately not `vX.Y.Z` — that namespace
+# belongs to the crate and already holds v0.1.0 and v0.2.0. An npm 0.1.0
+# release tagged `v0.1.0` would collide with the crate's first release.
+#
+# VISIBILITY: this repo is public, and GitHub Packages npm packages inherit
+# repository visibility. `publishConfig.access: restricted` is an npmjs
+# concept and does not make the package private here — it will be publicly
+# listed. It is not, however, publicly *installable* without effort: the
+# GitHub Packages npm registry requires an authenticated token for every read,
+# including public packages. If genuine privacy is ever required, the package
+# has to be published from a private repository; nothing in this file can
+# achieve it.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write # tag + push the release tag
+  packages: write # publish to GitHub Packages
+
+jobs:
+  publish:
+    if: "startsWith(github.event.head_commit.message, 'release: npm v')"
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable as of 2026-06-07
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          # prepack runs scripts/build-wasm.sh, which does
+          # `cargo install wasm-bindgen-cli --locked` and would otherwise
+          # rebuild the CLI from source on every release.
+          key: wasm-bindgen-cli
+
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+        with: { version: 10 }
+
+      # registry-url writes the ~/.npmrc that pnpm will trust for credentials.
+      # The committed npm/.npmrc maps the scope but deliberately carries no
+      # token — pnpm >=11 ignores credentials from a project .npmrc precisely
+      # so a committed file cannot leak one.
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v5.0.0
+        with:
+          node-version: 22
+          registry-url: https://npm.pkg.github.com
+          scope: '@mnmal-ai'
+
+      # Green-gate before anything irreversible. A publish cannot be undone —
+      # GitHub Packages will not let the same version be republished — so
+      # every gate runs first, exactly as publish.yml does for the crate.
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --workspace --all-features
+
+      - name: Build the native binary for the subprocess backend
+        run: cargo build --release -p holomap-clusterer
+
+      - name: npm suite
+        working-directory: npm
+        run: pnpm install --frozen-lockfile && pnpm check-types && pnpm test
+
+      # The version reaches a git tag and a registry coordinate, so it is
+      # validated as strict semver before it is allowed anywhere. package.json
+      # is repo-controlled and needs a PR to change, but an unvalidated value
+      # flowing into GITHUB_OUTPUT and then into `git tag` is the shape of a
+      # real injection even when this particular source is trusted.
+      - name: Resolve package version
+        id: ver
+        working-directory: npm
+        run: |
+          node -e '
+            const v = require("./package.json").version;
+            // Anchored to the WHOLE string. A shell `grep -Ex` was tried here
+            // and is wrong: -x matches a LINE, so a version containing a
+            // newline passes the check and then injects a second key into
+            // GITHUB_OUTPUT. JavaScript $ (without /m) does not admit even a
+            // trailing newline, and doing it in node keeps the value out of
+            // the shell entirely.
+            if (!/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(v)) {
+              console.error(`refusing to publish: version ${JSON.stringify(v)} is not strict semver`);
+              process.exit(1);
+            }
+            require("fs").appendFileSync(process.env.GITHUB_OUTPUT, `version=${v}\n`);
+            console.log(`Resolved version: ${v}`);
+          '
+
+      # Fail loudly rather than letting `pnpm publish` fail obscurely partway
+      # through, and rather than pushing a tag for a release that did not
+      # happen. Checked against the registry, not against git tags — the
+      # registry is the thing that actually refuses a duplicate.
+      - name: Guard against republishing
+        working-directory: npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          if npm view "@mnmal-ai/holomap-clusterer@${VERSION}" version >/dev/null 2>&1; then
+            echo "@mnmal-ai/holomap-clusterer@${VERSION} is already published — bump the version in npm/package.json"
+            exit 1
+          fi
+          echo "version ${VERSION} is unpublished; proceeding"
+
+      # `prepack` (build:wasm && build) runs automatically here, so dist/ and
+      # wasm/ are produced from this exact commit rather than from whatever a
+      # developer happened to have on disk. Both are gitignored for that
+      # reason. --no-git-checks because the runner is on a detached-ish
+      # checkout and pnpm would otherwise refuse over branch/cleanliness.
+      - name: Publish
+        working-directory: npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: pnpm publish --no-git-checks
+
+      - name: Tag the release
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          # annotated tags need a committer identity, which the runner lacks
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "holomap-clusterer-v${VERSION}" -m "@mnmal-ai/holomap-clusterer v${VERSION}"
+          git push origin "holomap-clusterer-v${VERSION}"
