@@ -30,6 +30,13 @@ name: publish-npm
 on:
   push:
     branches: [main]
+  # Manual retry path. Without this, a publish that fails AFTER the release
+  # commit has already landed on main — a transient registry error, or the
+  # missing-wasm bug that broke the first attempt — can only be retried by
+  # inventing a second commit with the same `release: npm v` subject, which
+  # pollutes history to work around a workflow limitation. Re-running is safe:
+  # the gates and the already-published guard run identically on this path.
+  workflow_dispatch:
 
 permissions:
   contents: write # tag + push the release tag
@@ -37,7 +44,10 @@ permissions:
 
 jobs:
   publish:
-    if: "startsWith(github.event.head_commit.message, 'release: npm v')"
+    # `github.event.head_commit` does not exist on a workflow_dispatch event,
+    # so the subject check must be short-circuited rather than merely relied on
+    # to be false — otherwise every manual run silently skips the job.
+    if: "github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'release: npm v')"
     runs-on: ubuntu-latest
     environment: release
     steps:
@@ -77,6 +87,15 @@ jobs:
 
       - name: Build the native binary for the subprocess backend
         run: cargo build --release -p holomap-clusterer
+
+      # Required BEFORE the npm suite, not merely before publishing. `pretest`
+      # refuses to run without npm/wasm/, which is gitignored build output, and
+      # `prepack` — which builds it during `pnpm publish` — happens later. The
+      # first release attempt failed exactly here. prepack still rebuilds it at
+      # publish time, which is the guarantee that the shipped artifact comes
+      # from the release commit; this step is what lets the gate run at all.
+      - name: Build wasm
+        run: bash scripts/build-wasm.sh
 
       - name: npm suite
         working-directory: npm
