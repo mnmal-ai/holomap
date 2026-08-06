@@ -16,6 +16,11 @@ serde_json = "1"
 hdbscan = { version = "0.12", default-features = false, features = ["serial"] }
 holomap = { version = "0.2", path = "../.." }
 
+[dev-dependencies]
+# Pins the reference corpus by content, not just by shape. The fixture lives
+# outside this repo and nothing versions it — see tests/fixture_regression.rs.
+sha2 = "0.10"
+
 [[bin]]
 name = "holomap-clusterer"
 path = "src/main.rs"
