@@ -52,6 +52,12 @@ The result is checked, not asserted: CI runs `fit_transform` twice and compares 
 
 The trade for exactness is scale: brute-force kNN is O(N²·d), so the honest ceiling is **≤ ~50k points**. Same-platform output is byte-identical; cross-platform it's *structurally* identical — and in practice the staged intermediates match the `umap-learn`/`scipy` references to within 1e-5 on Linux, macOS, and Windows alike (the parity suite runs on all three). Seeded approximate-NN for larger N is a future direction, not a v1 promise.
 
+> **"Same platform" means the same CPU, not just the same OS and architecture.** Two `x86_64-unknown-linux-gnu` machines running the same binary from the same `Cargo.lock` and toolchain can produce different embeddings if their CPU features differ — measured 2026-08-06 between an Ivy Bridge host (no AVX2, no FMA) and a Skylake one (both), and reproducible. Downstream this is visible: a density clusterer fed those embeddings moved by up to 1 cluster and 1.4 points of noise on a 723-row corpus.
+>
+> This is within the contract as written — cross-platform is *structural*, not bit-identical — but "platform" is easy to read as OS-and-architecture, so it is spelled out. Rebuilding with `-C target-cpu=` matching the older host did **not** reproduce its output, which rules out compile-time instruction selection and points at runtime CPU-feature dispatch in a dependency. Unconfirmed, and tracked.
+>
+> If you need bit-identical results across machines, compile to WebAssembly: wasm float arithmetic is IEEE-754 correctly-rounded and deterministic by specification, with no runtime dispatch and no FMA contraction. The same pipeline gives identical output on both hosts via wasm.
+
 holomap exists because we hit this wall building a concept-formation clusterer and needed the contract immediately. We filled the gap rather than working around it.
 
 ## Install

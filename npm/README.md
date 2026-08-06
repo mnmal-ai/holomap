@@ -26,32 +26,65 @@ Rewriting it in Rust removed the Python. Shipping the Rust as wasm removed the *
 
 Because they buy genuinely different things, and neither one dominates.
 
-**`WasmClusterer` — the default.** A `.wasm` is an ordinary package asset. No install step, no per-platform binary matrix, no postinstall script, no `node-gyp`. This matters most for the intended consumer: hydra's distribution model is npm-into-a-runtime-dir — plugins are discovered by scanning `node_modules`, releases ship by moving version pins and restarting one systemd unit. A backend requiring an operator to place a platform-correct executable somewhere would break that model.
+**`WasmClusterer` — the default, and the reproducible one.** A `.wasm` is an ordinary package asset. No install step, no per-platform binary matrix, no postinstall script, no `node-gyp`. This matters most for the intended consumer: hydra's distribution model is npm-into-a-runtime-dir — plugins are discovered by scanning `node_modules`, releases ship by moving version pins and restarting one systemd unit. A backend requiring an operator to place a platform-correct executable somewhere would break that model.
 
-**`SubprocessClusterer` — the opt-in.** Spawns the native binary and speaks JSON-lines to it. Faster, no row ceiling, and it's the backend that was already in production before any of this — the seam has survived one real backend swap already (`clusterer.py` → the Rust binary), so its pluggability is proven rather than speculative. Take this one if you're happy to manage a per-platform executable and want the speed.
+It also produces **identical clusterings on different machines**, which the native backend does not. That was discovered rather than designed — see [Reproducibility across machines](#reproducibility-across-machines-the-backends-differ) — and for a workload that carries identity it may matter more than the distribution argument.
+
+**`SubprocessClusterer` — the opt-in.** Spawns the native binary and speaks JSON-lines to it. Faster, no row ceiling, and it's the backend that was already in production before any of this — the seam has survived one real backend swap already (`clusterer.py` → the Rust binary), so its pluggability is proven rather than speculative.
+
+Take this one if you're happy to manage a per-platform executable, want the speed, and **do not need results to match across machines**. That last condition is not a formality; it is measured, and it is the reason to think twice.
 
 ### What the default costs you
 
-> ⚠️ **These timings are approximate and pending re-measurement.** They were taken on a 4-core Intel i5-3470S (Ivy Bridge, 2012) **under concurrent load from another project's test suite** — load average peaked around 60 on those 4 cores. Treat the ratio as indicative and the absolute durations as soft. The cluster and noise figures elsewhere in this README are *not* affected: those are deterministic for a given input and seed, and have been independently reproduced by three parties. Only wall-clock is contended.
-
-Same host, same corpus shape, wasm module warmed before timing; n=723 is a median of three runs, n=10k single-shot:
+Measured on a quiet host: Intel i7-6820HQ (Skylake, AVX2 + FMA), 8 threads, load average 0.33 before and 0.90 after, one idle kiwix container present. wasm module warmed before timing; n=723 is a median of three runs, n=10k single-shot.
 
 | Backend | n=723 | n=10,000 |
 |---|---|---|
-| `WasmClusterer` | 2.4 s | 53.6 s |
-| `SubprocessClusterer` | 1.3 s | 30.5 s |
+| `WasmClusterer` | 2.2 s | 47.1 s |
+| `SubprocessClusterer` | 0.9 s | 25.5 s |
+| **wasm costs** | **2.4×** | **1.9×** |
 
-**Choosing wasm looks to cost roughly 1.8×.** At the corpus sizes that actually occur — the reference corpus is 723 rows, and 10k is estimated at about a year of accumulation — that is about a second. That is what a clean install is worth here, and it's why wasm is the default rather than the fallback. The conclusion is robust to the noise: an independent measurement on the same box put it at ~1.5–1.6×, and the choice does not turn on which end of that range is right.
+At the corpus sizes that actually occur — the reference corpus is 723 rows, and 10k is roughly a year of accumulation — that is about **1.3 seconds**. That is what a clean install and cross-machine reproducibility are worth here.
+
+Two things worth knowing about these numbers rather than taking them flat:
+
+- **The ratio is hardware-dependent.** On an older pre-AVX2 host (i5-3470S, Ivy Bridge) the same measurement gave ~1.8× at n=723. Native gains from AVX2 and FMA on the O(N²·d) kNN kernel; wasm's `simd128` is 128-bit with no FMA and cannot. Expect the gap to widen, not narrow, on newer hardware.
+- **The n=10k figure is a single shot, and the harness runs wasm before subprocess.** On a 45 W mobile part, sustained load provokes package-power throttling, so the second arm ran on a hotter chassis. If that happened it penalised *subprocess*, meaning the true ratio may be higher than 1.9×. Interleaving would settle it; this run did not.
 
 ### `+simd128`: not measured, rather than measured as noise
 
 The build passes `-C target-feature=+simd128`, and it is kept because it is free.
 
-The original argument for it was that native LLVM auto-vectorises the kNN distance loop and wasm will not without the flag. That argument was previously described here as having "not survived measurement" — on the basis that n=723 was identical to three significant figures with and without it, and n=10k differed ~2.2%.
+The original argument for it was that native LLVM auto-vectorises the kNN distance loop and wasm will not without the flag. That was once described here as having "not survived measurement" — on the basis that n=723 was identical to three significant figures with and without it, and n=10k differed ~2.2%.
 
-**That retraction was overstated, in two separate ways.** Under the contention above, a 2.2% delta establishes nothing in either direction. And the test hardware could not have demonstrated the effect even on a quiet box: the i5-3470S predates AVX2 and has no FMA, while wasm's `simd128` is 128-bit — so the *widest* gap the original argument predicts, native pulling ahead on 256-bit integer lanes and fused multiply-add, was not available to be observed.
+**That retraction was overstated, in two separate ways.** Those runs were taken under heavy concurrent load, where a 2.2% delta establishes nothing in either direction. And the test hardware could not have shown the effect at all: the i5-3470S predates AVX2 and has no FMA, while wasm's `simd128` is 128-bit — so the widest gap the argument predicts was not available to be observed.
 
-So the honest position is **not measured**, not *measured and found absent*. Those read very differently to someone deciding whether to keep the flag. Re-measurement is pending on AVX2 hardware, which is where the effect would appear if it is real.
+So the honest position is **not measured**, not *measured and found absent*. The flag itself still has not been A/B-tested on AVX2 hardware. What *has* been measured there is the backend ratio widening at n=723, which is the direction the original argument predicted.
+
+## Reproducibility across machines: the backends differ
+
+**`WasmClusterer` produces identical output on different machines. `SubprocessClusterer` does not.**
+
+Measured on two hosts with the same commit, the same `rustc` 1.97.1, a byte-identical `Cargo.lock`, and the same corpus verified by sha256 after transfer. Only the CPU differs:
+
+| Input regime | Backend | i5-3470S (Ivy Bridge) | i7-6820HQ (Skylake) | |
+|---|---|---|---|---|
+| raw | **wasm** | 37 / 29.6% | 37 / 29.6% | identical |
+| raw | **native** | 36 / 30.0% | 36 / 31.4% | **differs** |
+| normalised | **wasm** | 36 / 27.0% | 36 / 27.0% | identical |
+| normalised | **native** | 34 / 27.2% | 33 / 27.7% | **differs** |
+
+The Ivy Bridge baseline was re-run as a control immediately afterwards and was unchanged, so this is reproducible rather than drift. Every figure remains inside the consumer's 30–60 cluster / 10–35% noise envelope — the bands hold; the exact values do not.
+
+**Why wasm is stable is a specification property, not luck.** WebAssembly's floating-point arithmetic is IEEE-754 correctly-rounded and deterministic by design, there is no runtime CPU-feature detection, and the MVP has no fused multiply-add — so there is no contraction for a compiler to apply differently on different hardware. A given `.wasm` computes the same answer everywhere.
+
+Native has no such guarantee. What the divergence is *not*: compile-time instruction selection. Rebuilding on the Skylake host with `-C target-cpu=ivybridge` — 42 crates recompiled, verified — still produced the Skylake numbers. That plus wasm's invariance is consistent with **runtime CPU-feature dispatch** somewhere in the native dependency stack. `matrixmultiply`, reached via `nalgebra`, does exactly that and is the obvious suspect — but it is a suspect, not a conclusion, and this document will not assert it until it is confirmed.
+
+### What to do about it
+
+- **If you persist clusterings, record the host alongside the backend.** `{ backend, version, seed, params }` was already the recommended provenance tuple; CPU identity belongs in it too. A stored clustering compared against a fresh one computed elsewhere is comparing two different functions.
+- **If cluster identity has to survive a host migration, use wasm.** This is the case where the ~2× is worth paying, and it is not a preference — the alternative does not have the property.
+- **Do not switch to native purely for speed without checking this first.** The performance win is real and visible; the reproducibility cost is invisible at the moment you make the decision, and shows up on a machine you have not bought yet.
 
 ## Why determinism is the point
 
