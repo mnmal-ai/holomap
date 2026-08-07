@@ -1,6 +1,6 @@
 [package]
 name = "holomap-clusterer"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Deterministic reduce→cluster pipeline: holomap UMAP + HDBSCAN. JSON-lines peripheral and wasm binding."
@@ -14,7 +14,7 @@ serde_json = "1"
 # rayon disabled deliberately: parallel MST construction would admit
 # thread-scheduling non-determinism. `serial` gives us .cluster().
 hdbscan = { version = "0.12", default-features = false, features = ["serial"] }
-holomap = { version = "0.2", path = "../.." }
+holomap = { version = "0.3", path = "../.." }
 
 [dev-dependencies]
 # Pins the reference corpus by content, not just by shape. The fixture lives

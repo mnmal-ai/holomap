@@ -71,15 +71,15 @@ Measured on the 723-row corpus at the pinned params. All three inputs are the sa
 
 | input | clusters | noise |
 |---|---|---|
-| raw | 36 | 30.0% (217 rows) |
-| normalised, norm accumulated in f32 | 37 | 29.2% (211 rows) |
-| normalised, norm accumulated in f64 | 34 | 27.2% (197 rows) |
+| raw | 37 | 29.6% |
+| normalised, norm accumulated in f32 | 36 | 28.9% |
+| normalised, norm accumulated in f64 | 36 | 27.0% |
 
-A spread of 3 clusters and 20 noise rows, produced entirely by how a division was rounded. A fourth path — coda's `EmbeddingsGateway`, normalising its own way — reported 33 / 25.4%, which neither variant here reproduces.
+A spread of 1 cluster and 2.6 noise rows, produced entirely by how a division was rounded. The effect is smaller since holomap 0.3.0 removed the libm dispatch (it was 3 clusters and 20 noise rows before), but it has *not* gone away and is not expected to: the sensitivity is a property of density clustering, not of the dispatch. Do not read the narrowing as a promise.
 
-### It also does not survive a change of machine
+### It used to not survive a change of machine — fixed in holomap 0.3.0
 
-Same commit, same `rustc` 1.97.1, byte-identical `Cargo.lock`, same corpus verified by sha256. Only the CPU differs:
+Before the fix, same commit, byte-identical `Cargo.lock`, same corpus verified by sha256, only the CPU differing:
 
 | Input regime | i5-3470S (Ivy Bridge) | i7-6820HQ (Skylake) |
 |---|---|---|
@@ -87,11 +87,18 @@ Same commit, same `rustc` 1.97.1, byte-identical `Cargo.lock`, same corpus verif
 | normalised, f32 | 37 / 29.2% | 36 / 28.9% |
 | normalised, f64 | 34 / 27.2% | 33 / 27.7% |
 
-The Ivy Bridge baseline was re-run as a control immediately afterwards, unchanged — reproducible, not drift. All values stay inside the 30–60 / 10–35% envelope; the bands hold, the exact figures do not.
+The Ivy Bridge baseline was re-run as a control, unchanged — reproducible, not drift.
 
-This is **not** compile-time instruction selection. Rebuilding on the Skylake host with `-C target-cpu=ivybridge` (42 crates recompiled, verified) still produced the Skylake numbers. That is consistent with **runtime CPU-feature dispatch** in a dependency — `matrixmultiply` via `nalgebra` does this and is the obvious suspect, but it is unconfirmed and is not asserted here.
+**Cause, confirmed:** glibc's libm resolves `exp`/`log`/`pow` through IFUNC at load time and picks AVX2/FMA variants when the CPU offers them. It was *not* compile-time instruction selection — `-C target-cpu=ivybridge` on the Skylake host (42 crates recompiled) still produced Skylake's numbers. Masking the selection with `GLIBC_TUNABLES=glibc.cpu.hwcaps=-AVX2,-FMA` reproduced the Ivy Bridge column exactly, in all three regimes, while Rust-side `is_x86_feature_detected!` was verified unchanged — which exonerates `matrixmultiply`, the original suspect.
 
-Notably, the **WebAssembly build of this same pipeline does not diverge**: identical output on both hosts. wasm's floating-point arithmetic is IEEE-754 correctly-rounded and deterministic by specification, with no runtime feature detection and no fused multiply-add to contract differently. That makes the wasm binding the reproducible way to run this crate across machines — a property discovered rather than designed. See the npm package's README.
+**Fix:** holomap 0.3.0 routes every transcendental through the pure-Rust `libm` crate, removing the dispatch. `wasm32-unknown-unknown` has no system libm and was already using those implementations — which is *why* the wasm build never diverged. Native has now converged onto the same answers:
+
+| Input regime | wasm (unchanged) | native, holomap 0.3.0 |
+|---|---|---|
+| raw | 37 / 29.6% | 37 / 29.6% |
+| normalised, f64 | 36 / 27.0% | 36 / 27.0% |
+
+Cross-backend delta is now **zero** clusters and zero noise rows in both regimes, where it was previously reported but unbounded. Choosing wasm for reproducibility is no longer necessary — pick a backend on speed and deployment shape instead.
 
 Two consequences worth taking seriously:
 

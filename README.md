@@ -52,11 +52,13 @@ The result is checked, not asserted: CI runs `fit_transform` twice and compares 
 
 The trade for exactness is scale: brute-force kNN is O(N²·d), so the honest ceiling is **≤ ~50k points**. Same-platform output is byte-identical; cross-platform it's *structurally* identical — and in practice the staged intermediates match the `umap-learn`/`scipy` references to within 1e-5 on Linux, macOS, and Windows alike (the parity suite runs on all three). Seeded approximate-NN for larger N is a future direction, not a v1 promise.
 
-> **"Same platform" means the same CPU, not just the same OS and architecture.** Two `x86_64-unknown-linux-gnu` machines running the same binary from the same `Cargo.lock` and toolchain can produce different embeddings if their CPU features differ — measured 2026-08-06 between an Ivy Bridge host (no AVX2, no FMA) and a Skylake one (both), and reproducible. Downstream this is visible: a density clusterer fed those embeddings moved by up to 1 cluster and 1.4 points of noise on a 723-row corpus.
+> **Same-CPU-family caveat, and how it was closed (v0.3.0).** Between 0.2.0 and 0.3.0, two `x86_64-unknown-linux-gnu` machines running the same binary from the same `Cargo.lock` and toolchain could produce different embeddings if their CPU features differed — measured between an Ivy Bridge host (no AVX2/FMA) and a Skylake one (both), reproducibly, and visible downstream as up to 1 cluster and 1.4 points of noise on a 723-row corpus.
 >
-> This is within the contract as written — cross-platform is *structural*, not bit-identical — but "platform" is easy to read as OS-and-architecture, so it is spelled out. Rebuilding with `-C target-cpu=` matching the older host did **not** reproduce its output, which rules out compile-time instruction selection and points at runtime CPU-feature dispatch in a dependency. Unconfirmed, and tracked.
+> **Cause: glibc's libm dispatches through IFUNC at load time**, selecting AVX2/FMA implementations of `exp`/`log`/`pow` based on the CPU it lands on. Not compile-time codegen — rebuilding with `-C target-cpu=` matching the older host did not reproduce its output. Confirmed by masking the selection with `GLIBC_TUNABLES=glibc.cpu.hwcaps=-AVX2,-FMA` on the Skylake host, which reproduced the Ivy Bridge results exactly in all three input regimes, while Rust-side detection (`is_x86_feature_detected!`) was verified unchanged — ruling out `matrixmultiply`, the original suspect.
 >
-> If you need bit-identical results across machines, compile to WebAssembly: wasm float arithmetic is IEEE-754 correctly-rounded and deterministic by specification, with no runtime dispatch and no FMA contraction. The same pipeline gives identical output on both hosts via wasm.
+> **Fix: every transcendental now routes through the pure-Rust [`libm`](https://crates.io/crates/libm) crate** (`src/fmath.rs`), so there is no runtime selection left to make. This is what the wasm target had been doing all along — wasm has no system libm — which is exactly why wasm was reproducible when native was not. Native output now matches the wasm build's, rather than being merely self-consistent.
+>
+> Two consequences worth knowing before upgrading: **0.3.0 changes embeddings on every host**, including hosts the dispatch never affected — the figures from 0.2.0 do not carry over. And it costs throughput: ~1.35× slower on the shipped 1000×50-d bench, measured on the *non*-AVX2 host, so treat that as a lower bound.
 
 holomap exists because we hit this wall building a concept-formation clusterer and needed the contract immediately. We filled the gap rather than working around it.
 
@@ -75,7 +77,7 @@ let embedding = Holomap::builder(42)   // the seed is a required argument
     .fit_transform(&data, n_features)?;
 ```
 
-## Status: v0.2.0 — shipped
+## Status: v0.3.0 — shipped
 
 | | Milestone | Exit test | |
 |---|---|---|---|
@@ -84,18 +86,20 @@ let embedding = Holomap::builder(42)   // the seed is a required argument
 | M3 | seeded SGD + end-to-end `fit_transform` | trustworthiness vs `umap-learn` on blobs/swiss-roll; bit-identity CI gate | ✅ |
 | M4 | API polish, docs, crates.io publish | | ✅ |
 
-**v0.2.0** adds: non-finite input rejection, an optional `ndarray` front door (`fit_transform_array`), a property-tested determinism invariant, and a cross-platform CI matrix (Linux/macOS/Windows) backing the parity claim with evidence.
+**v0.3.0** closes the cross-CPU divergence described above: transcendentals move to the pure-Rust `libm` crate, so output no longer depends on which SIMD kernels glibc's IFUNC resolver picks. **This changes embeddings on every host** — 0.2.0 figures do not carry over — and costs ~1.35× throughput. Native output now agrees with the wasm build's exactly.
+
+**v0.2.0** added: non-finite input rejection, an optional `ndarray` front door (`fit_transform_array`), a property-tested determinism invariant, and a cross-platform CI matrix (Linux/macOS/Windows) backing the parity claim with evidence.
 
 Measured (k=15 trustworthiness, same data, same params): blobs 0.954 vs
 umap-learn's 0.955; swiss roll 0.991 vs 0.990. Wall-clock at 1k×50-d points:
-~3 s release-mode vs umap-learn's ~28 s on the same machine; at 10k×50-d, ~26 s vs ~69 s (`cargo run --release --example bench -- 10000`).
+~4.5 s release-mode vs umap-learn's ~28 s on the same machine (was ~3 s before 0.3.0; see the throughput note above).
 
 ## Scope (v1)
 
 - `fit_transform` via a builder: `n_components`, `n_neighbors`, `min_dist`, `spread`, `metric` (euclidean | cosine), `n_epochs`, `init` (spectral | random), `seed` (required)
 - Exact brute-force kNN — deterministic by construction; honest envelope is ≤ ~50k points
 - Serial seeded SGD (single PCG64 stream — *all* pipeline randomness lives in one place)
-- Dependencies: `rand` + `rand_pcg`, `nalgebra` (pure-Rust eigensolves for the spectral init; Lanczos itself is in-crate). No BLAS, no LAPACK, no C.
+- Dependencies: `rand` + `rand_pcg`, `nalgebra` (pure-Rust eigensolves for the spectral init; Lanczos itself is in-crate), `libm` (host-invariant transcendentals — see `src/fmath.rs`). No BLAS, no LAPACK, no C.
 - Optional features: `serde` (serialize the config, seed included — a stored config replays bit-identically); `ndarray` (`fit_transform_array` taking `ArrayView2<f32>` → `Array2<f32>`).
 
 Deliberately out of scope: GPU, parametric/supervised UMAP, densMAP, plotting, unseeded code paths. The crate's identity is **small, auditable, deterministic** — generality is resisted on purpose.

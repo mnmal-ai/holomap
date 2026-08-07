@@ -20,14 +20,20 @@
 //!
 //! | input | clusters | noise |
 //! |---|---|---|
-//! | raw | 36 | 30.0% (217 rows) |
-//! | normalised, norm accumulated in f32 | 37 | 29.2% (211 rows) |
-//! | normalised, norm accumulated in f64 | 34 | 27.2% (197 rows) |
+//! | raw | 37 | 29.6% |
+//! | normalised, norm accumulated in f32 | 36 | 28.9% |
+//! | normalised, norm accumulated in f64 | 36 | 27.0% |
 //!
 //! All three are the same vectors to within float32 rounding. The spread is
-//! 3 clusters and 20 noise rows, produced entirely by *how* the division was
-//! rounded. A fourth path — coda's `EmbeddingsGateway`, which normalises in
-//! its own way — reported 33 / 25.4%, which neither variant here reproduces.
+//! 1 cluster and 2.6 noise rows, produced entirely by *how* the division was
+//! rounded.
+//!
+//! These figures are from holomap 0.3.0, which routes transcendentals through
+//! the pure-Rust `libm` crate and removed glibc's IFUNC dispatch. Before it,
+//! the same three rows read 36/30.0%, 37/29.2%, 34/27.2% — a spread of 3
+//! clusters and 20 noise rows. The sensitivity narrowed; it did NOT disappear,
+//! and is not expected to. It is a property of density clustering over a
+//! reduction, not of the dispatch that used to amplify it.
 //!
 //! **The 27.2% in the f64 row is a coincidence.** sklearn's figure for this
 //! corpus is also 27.2% (via coda's `holomap_gate.py`, which reduces with

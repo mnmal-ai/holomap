@@ -9,6 +9,7 @@
 //! ordering every later stage iterates in. Explicit zeros are eliminated,
 //! matching scipy's `eliminate_zeros()`.
 
+use crate::fmath::HostInvariant;
 use crate::knn::Knn;
 use crate::smooth_knn::SmoothKnn;
 
@@ -38,7 +39,7 @@ pub fn fuzzy_simplicial_set(knn: &Knn, calib: &SmoothKnn) -> FuzzyGraph {
             let val = if d <= 0.0 || calib.sigmas[i] == 0.0 {
                 1.0
             } else {
-                (-(d / calib.sigmas[i])).exp()
+                (-(d / calib.sigmas[i])).hi_exp()
             };
             if val != 0.0 {
                 directed.push((i as u32, col, val));
@@ -114,7 +115,7 @@ mod tests {
         let g = fuzzy_simplicial_set(&knn, &calib);
 
         // exp(-2/sigma0) == exp(-1/sigma1) == exp(-1/sigma2) by construction
-        let w = (-2.0_f32 / 3.72998046875).exp();
+        let w = (-2.0_f32 / 3.72998046875).hi_exp();
         let fused = (w + w) - w * w; // t-conorm of equal directed weights
 
         assert_eq!(g.n, 3);
@@ -144,7 +145,7 @@ mod tests {
         };
         let g = fuzzy_simplicial_set(&knn, &calib);
 
-        let w = (-0.5_f32).exp();
+        let w = (-0.5_f32).hi_exp();
         assert_eq!(g.rows, vec![0, 1, 1, 2]);
         assert_eq!(g.cols, vec![1, 0, 2, 1]);
         // (0,1)/(1,0): one-directional w survives unchanged and mirrors;

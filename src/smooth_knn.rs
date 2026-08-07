@@ -8,6 +8,7 @@
 //! `psum`/`lo`/`mid`/`hi` in float32 and starts `hi` at float32 MAX (not
 //! infinity) — both mirrored here so values track the oracle closely.
 
+use crate::fmath::HostInvariant;
 const SMOOTH_K_TOLERANCE: f64 = 1e-5;
 const MIN_K_DIST_SCALE: f32 = 1e-3;
 
@@ -42,7 +43,7 @@ pub fn smooth_knn(knn_dists: &[f32], k: usize) -> SmoothKnn {
             for &d in &row[1..] {
                 let d = d - rhos[i];
                 if d > 0.0 {
-                    psum += (-(d / mid)).exp();
+                    psum += (-(d / mid)).hi_exp();
                 } else {
                     psum += 1.0;
                 }

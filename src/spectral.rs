@@ -15,6 +15,7 @@
 
 use crate::components::connected_components;
 use crate::eigen::smallest_eigenpairs;
+use crate::fmath::HostInvariant;
 use crate::fuzzy::FuzzyGraph;
 use crate::metric::euclidean;
 use crate::rng::SeededRng;
@@ -200,7 +201,7 @@ fn component_meta_layout(
             ));
             rows.push(i as u32);
             cols.push(j as u32);
-            vals.push((-(d * d)).exp() as f32);
+            vals.push((-(d * d)).hi_exp() as f32);
         }
     }
     let affinity = FuzzyGraph {
