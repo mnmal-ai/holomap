@@ -5,6 +5,7 @@
 //! call order. That is the determinism contract's foundation: same seed,
 //! same stream, same everything. There is no constructor from OS entropy.
 
+use crate::fmath::HostInvariant;
 use rand::Rng as _;
 use rand::SeedableRng as _;
 use rand_pcg::Pcg64;
@@ -35,7 +36,7 @@ impl SeededRng {
         // draw in f64 for the log/sqrt, emit f32 — u1 nudged away from 0
         let u1: f64 = f64::from(self.inner.random::<f32>()).max(f64::MIN_POSITIVE);
         let u2: f64 = f64::from(self.inner.random::<f32>());
-        let z = (-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos();
+        let z = (-2.0 * u1.hi_ln()).sqrt() * (std::f64::consts::TAU * u2).hi_cos();
         scale * z as f32
     }
 }

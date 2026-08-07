@@ -42,6 +42,7 @@ mod curve;
 mod eigen;
 #[cfg(test)]
 mod fixture_parity;
+mod fmath;
 mod fuzzy;
 mod knn;
 mod metric;

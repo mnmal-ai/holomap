@@ -1,6 +1,6 @@
 {
   "name": "@mnmal-ai/holomap-clusterer",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Deterministic reduce→cluster: holomap UMAP + HDBSCAN. One Clusterer interface, wasm and subprocess backends.",
   "license": "MIT OR Apache-2.0",
   "repository": { "type": "git", "url": "git+https://github.com/mnmal-ai/holomap.git", "directory": "npm" },

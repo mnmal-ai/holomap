@@ -8,6 +8,7 @@
 //! Fully deterministic: fixed grid, fixed starting point, fixed iteration
 //! schedule.
 
+use crate::fmath::HostInvariant;
 /// Fit `(a, b)` for the membership curve from `min_dist` and `spread`.
 pub fn find_ab_params(spread: f64, min_dist: f64) -> (f64, f64) {
     const N: usize = 300;
@@ -18,7 +19,7 @@ pub fn find_ab_params(spread: f64, min_dist: f64) -> (f64, f64) {
         *y = if *x < min_dist {
             1.0
         } else {
-            (-(*x - min_dist) / spread).exp()
+            (-(*x - min_dist) / spread).hi_exp()
         };
     }
 
@@ -36,12 +37,12 @@ pub fn find_ab_params(spread: f64, min_dist: f64) -> (f64, f64) {
         // accumulate J^T J (2×2) and J^T r
         let (mut jaa, mut jab, mut jbb, mut ga, mut gb) = (0.0, 0.0, 0.0, 0.0, 0.0);
         for (&x, &y) in xs.iter().zip(&ys) {
-            let xp = if x > 0.0 { x.powf(2.0 * b) } else { 0.0 };
+            let xp = if x > 0.0 { x.hi_powf(2.0 * b) } else { 0.0 };
             let denom = 1.0 + a * xp;
             let r = 1.0 / denom - y;
             let da = -xp / (denom * denom);
             let db = if x > 0.0 {
-                -2.0 * a * xp * x.ln() / (denom * denom)
+                -2.0 * a * xp * x.hi_ln() / (denom * denom)
             } else {
                 0.0
             };
@@ -84,7 +85,7 @@ pub fn find_ab_params(spread: f64, min_dist: f64) -> (f64, f64) {
 #[inline]
 fn model(x: f64, a: f64, b: f64) -> f64 {
     if x > 0.0 {
-        1.0 / (1.0 + a * x.powf(2.0 * b))
+        1.0 / (1.0 + a * x.hi_powf(2.0 * b))
     } else {
         1.0
     }

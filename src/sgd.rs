@@ -15,6 +15,7 @@
 //!   only the head moves
 //! - `alpha = 1 − n/n_epochs` per epoch, linear to 0
 
+use crate::fmath::HostInvariant;
 use crate::fuzzy::FuzzyGraph;
 use crate::rng::SeededRng;
 
@@ -99,7 +100,7 @@ pub fn optimize_embedding(
             let d2 = rdist(embedding, dim, j, k);
             let grad_coeff = if d2 > 0.0 {
                 let d2 = f64::from(d2);
-                (-2.0 * a * b * d2.powf(b - 1.0)) / (a * d2.powf(b) + 1.0)
+                (-2.0 * a * b * d2.hi_powf(b - 1.0)) / (a * d2.hi_powf(b) + 1.0)
             } else {
                 0.0
             };
@@ -120,7 +121,7 @@ pub fn optimize_embedding(
                 let d2 = rdist(embedding, dim, j, neg);
                 let grad_coeff = if d2 > 0.0 {
                     let d2 = f64::from(d2);
-                    2.0 * GAMMA * b / ((0.001 + d2) * (a * d2.powf(b) + 1.0))
+                    2.0 * GAMMA * b / ((0.001 + d2) * (a * d2.hi_powf(b) + 1.0))
                 } else if j == neg {
                     continue;
                 } else {
