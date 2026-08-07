@@ -38,13 +38,39 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace --all-features
 
+      # Selected BY NAME, not packages[0]. This is a workspace with two
+      # published crates, and `cargo metadata` makes no ordering guarantee.
+      # It happens to list holomap first today only because cargo sorts
+      # alphabetically and "holomap" < "holomap-clusterer" — a coincidence
+      # that a third member sorting ahead of it would silently end.
+      #
+      # What that would actually cost, stated accurately because the obvious
+      # guess is worse than the truth: `cargo publish` below takes no -p and
+      # publishes the ROOT package from its own manifest, so a mis-resolved
+      # version can never publish the wrong crate or the wrong version. The
+      # damage is a correctly-published release carrying a MISLABELLED tag —
+      # and, where the bad version collides with an existing tag, a clean
+      # failure at the re-tag guard, which runs before publish rather than
+      # after. Bad, recoverable, and worth removing.
+      #
+      # Validation and the GITHUB_OUTPUT write both happen in python, so the
+      # version never passes through the shell. A version carrying a newline
+      # would otherwise append a second key to GITHUB_OUTPUT; the anchored
+      # fullmatch cannot be satisfied by a multi-line string. Mirrors
+      # publish-clusterer-crate.yml, which got this treatment first.
       - name: Resolve crate version
         id: ver
         run: |
-          v=$(cargo metadata --no-deps --format-version 1 \
-                | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
-          echo "version=$v" >> "$GITHUB_OUTPUT"
-          echo "Resolved version: $v"
+          cargo metadata --no-deps --format-version 1 | python3 -c '
+          import json, os, re, sys
+          pkgs = json.load(sys.stdin)["packages"]
+          v = next(p["version"] for p in pkgs if p["name"] == "holomap")
+          if not re.fullmatch(r"\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?", v):
+              sys.exit(f"refusing to publish: version {v!r} is not strict semver")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write(f"version={v}\n")
+          print(f"Resolved version: {v}")
+          '
 
       - name: Guard against re-tagging
         env:
