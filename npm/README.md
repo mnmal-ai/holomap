@@ -224,8 +224,8 @@ pnpm add @mnmal-ai/holomap-clusterer
 
 Two things that are easy to get wrong:
 
-- **The trigger is `release: npm v`, not `release: v`.** The latter belongs to `publish.yml`, which releases the `holomap` *crate* to crates.io. The three artifacts version independently — as of 2026-08-07 the `holomap` crate is 0.3.0, the `holomap-clusterer` crate is 0.2.0, and this package is 0.2.0 — so one trigger cannot serve all three. They are mutually exclusive by construction: after `release: `, the next character is `v`, `c` or `n`.
-- **The tag is `holomap-clusterer-vX.Y.Z`.** Plain `vX.Y.Z` is the crate's namespace and already holds `v0.1.0`, `v0.2.0` and `v0.3.0`; an npm release tagged that way would collide.
+- **The trigger is `release: npm v`, not `release: v`.** The latter belongs to `publish.yml`, which releases the `holomap` *crate* to crates.io. The three artifacts version **independently** — read the current numbers from `Cargo.toml`, `crates/holomap-clusterer/Cargo.toml` and `npm/package.json`, not from prose — so one trigger cannot serve all three. They are mutually exclusive by construction: after `release: `, the next character is `v`, `c` or `n`.
+- **The tag is `holomap-clusterer-vX.Y.Z`.** Plain `vX.Y.Z` is the crate's namespace; an npm release tagged that way would collide. `git tag` is the authority on what is taken.
 
 #### Queued for the next release — do this while you are here
 
