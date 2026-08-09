@@ -224,8 +224,16 @@ pnpm add @mnmal-ai/holomap-clusterer
 
 Two things that are easy to get wrong:
 
-- **The trigger is `release: npm v`, not `release: v`.** The latter belongs to `publish.yml`, which releases the `holomap` *crate* to crates.io. The two artifacts version independently — the crate is 0.2.0 while this package is 0.1.0 — so one trigger cannot serve both. They are mutually exclusive by construction, since `release: n…` never matches `release: v`.
-- **The tag is `holomap-clusterer-vX.Y.Z`.** Plain `vX.Y.Z` is the crate's namespace and already holds `v0.1.0` and `v0.2.0`; an npm 0.1.0 release tagged that way would collide with the crate's first release.
+- **The trigger is `release: npm v`, not `release: v`.** The latter belongs to `publish.yml`, which releases the `holomap` *crate* to crates.io. The three artifacts version independently — as of 2026-08-07 the `holomap` crate is 0.3.0, the `holomap-clusterer` crate is 0.2.0, and this package is 0.2.0 — so one trigger cannot serve all three. They are mutually exclusive by construction: after `release: `, the next character is `v`, `c` or `n`.
+- **The tag is `holomap-clusterer-vX.Y.Z`.** Plain `vX.Y.Z` is the crate's namespace and already holds `v0.1.0`, `v0.2.0` and `v0.3.0`; an npm release tagged that way would collide.
+
+#### Queued for the next release — do this while you are here
+
+Deliberately deferred work that is **not worth cutting a release for on its own**, but costs nothing folded into one that is happening anyway. If you are reading this because you are about to cut a release, do these first.
+
+- [ ] **Add `"./package.json": "./package.json"` to the `exports` map.** Version introspection currently requires `new URL('…/package.json', import.meta.url)` + `readFileSync`, because the map has only ever exposed `"."`. Two of three consumers hit this independently: hydra-recall documented it in `clusterer-version.ts`'s comment and works around it with a hand-maintained constant plus a drift test; coda-claude tripped over it with `ERR_PACKAGE_PATH_NOT_EXPORTED`. Neither *needs* the fix — both have working paths — which is why it is queued rather than shipped.
+
+  For the record, since the reverse claim was made and is wrong: **nothing was ever dropped.** `./package.json` has never been in this map — verified by `git log -S'"./package.json"' -- npm/package.json` returning nothing, and the map reading identically since commit `283df1a`, which created the package. A 0.2.1 "restoring" it would have documented a regression that never happened.
 
 ### A note on visibility, corrected by observation
 
