@@ -1,4 +1,4 @@
-<!-- hydra-conventions vsynoptic-0.2.4 — plugin-owned; do not edit. Edit your own CLAUDE.md instead. -->
+<!-- hydra-conventions vsynoptic-1.4.1+446ab494 — plugin-owned; do not edit. Edit your own CLAUDE.md instead. -->
 
 # Hydra interaction conventions
 
@@ -10,14 +10,16 @@ Use the `hydra` MCP tools (`hydra_schema`, `hydra_query`, `hydra_mutate`, `hydra
 
 ## Qualified frame keys
 
-Every query/mutate/subscribe key is `<namespace>/<TypeOrMutation>` — e.g. `claude/Todo`, `claude/createTodo`. There is no `namespace` sidecar.
+Every query/mutate/subscribe key is `<namespace>/<TypeOrMutation>` — e.g. `cortext/Todo`, `cortext/createTodo`. There is no `namespace` sidecar.
+
+`hydra_recall` is the exception: it takes `namespace` as its own argument, and it is **required** — pass it explicitly. Hydra ≥3.19 rejects an omitted namespace with `code: 'missing_namespace'` rather than falling back to a default. The old fallback was the retired `claude` namespace, so omitting it used to return an empty result from a namespace that no longer resolves — a silent miss that now fails loudly.
 
 ## Filters live in `where`
 
 Top-level `params` are not filters. Operators: `eq`, `neq`, `gt|gte|lt|lte`, `between`, `in|nin`, `contains`, `startsWith|endsWith`. Example:
 
 ```json
-{ "claude/Todo": { "params": { "where": { "status": { "eq": "open" } }, "limit": 10 }, "fields": { "id": true, "title": true } } }
+{ "cortext/Todo": { "params": { "where": { "status": { "eq": "open" } }, "limit": 10 }, "fields": { "id": true, "title": true } } }
 ```
 
 Retrieval-tuned handle fields (`name`, `title`, `topic`, `synopsis`, `description`) are indexed and filter freely. Long-form fields (`body`, `summary`, `notes`, `rationale`) are deliberately unindexed — a structural filter on them rejects with `unindexed_field` unless you pass `params._allowTableScan: true`. For content search, prefer `hydra_recall` (semantic) over scanning prose. `eq: null` never matches (SQL three-valued logic) — there is no is-null operator; project the field and filter client-side.
@@ -31,7 +33,7 @@ Retrieval-tuned handle fields (`name`, `title`, `topic`, `synopsis`, `descriptio
 An array value under one op-key is one atomic transaction; each element is a full `{ params, fields }` frame:
 
 ```json
-{ "claude/createTodo": [ { "params": { "title": "a" }, "fields": { "id": true } }, { "params": { "title": "b" }, "fields": { "id": true } } ] }
+{ "cortext/createTodo": [ { "params": { "title": "a" }, "fields": { "id": true } }, { "params": { "title": "b" }, "fields": { "id": true } } ] }
 ```
 
 Do NOT put the array inside `params` — that writes garbage rows.
