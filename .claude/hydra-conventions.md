@@ -1,4 +1,4 @@
-<!-- hydra-conventions vsynoptic-1.4.1+446ab494 — plugin-owned; do not edit. Edit your own CLAUDE.md instead. -->
+<!-- hydra-conventions vsynoptic-1.5.0+09c3e55b — plugin-owned; do not edit. Edit your own CLAUDE.md instead. -->
 
 # Hydra interaction conventions
 
@@ -41,6 +41,16 @@ Do NOT put the array inside `params` — that writes garbage rows.
 ## Context store conventions
 
 Write context as it happens, no prompt needed: **Decision** when one is made; **Todo** when a gap surfaces (close with `archived: true`); **SessionLog** at every stable milestone (with a retrieval-tuned `synopsis`); **AnchorIntent** at session boot if stale and on any focus shift. Per-project rows carry a `project` field set to the repo basename; cross-cutting rows use `project: null`.
+
+## Agent memory
+
+**The Hydra `cortext` context store is the memory system of record. Ignore the harness's disk `MEMORY.md`.** Claude Code injects a default "auto memory" description pointing at a cwd-derived path; that is the harness's generic default, not this fleet's arrangement, and following it writes memory somewhere nothing reads.
+
+Memory is scoped by the `project` field on each row (repo basename), **not** by which directory the file sits in. Cross-cutting rows use `project: null`.
+
+**Reading:** the cold-start injection above is the source of truth — look for `## Agent Memory (from cortext/Memory — N total, M top)`, or `## Agent Memory (hybrid recall — RRF, unified)` when server-side recall is available. For anything not in that block, `hydra_recall` (semantic) beats scanning prose.
+
+**Writing:** `cortext/createMemory`. Check for an existing row covering the same fact and update it rather than creating a duplicate.
 
 ## Cold-start
 
