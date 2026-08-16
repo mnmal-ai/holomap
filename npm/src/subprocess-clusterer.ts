@@ -53,10 +53,26 @@ export class SubprocessClusterer implements Clusterer {
       child.on('error', (e) =>
         settle(() => reject(new ClustererError(`spawn failed: ${e.message}`)))
       );
-      child.on('close', (code) => {
-        if (code !== 0 && out.trim().length === 0) {
+      // A non-zero exit is a crash regardless of what the child managed to
+      // print first. This condition used to also require empty stdout, so any
+      // output at all turned a crash into a resolve — `JSON.parse` then failed
+      // on whatever the child had printed and the caller saw "malformed
+      // output" instead of "the child died". `hdbscan` 0.12 has exactly that
+      // shape: a `HDBSCAN_WARNING:` line to STDOUT, then a panic.
+      //
+      // Salvaging partial stdout from a failed child is never right by
+      // default here: `main.rs` reports every protocol-level error as a
+      // Response on stdout and still exits 0, so a non-zero exit only ever
+      // means abnormal termination — there is no success case to lose.
+      child.on('close', (code, signal) => {
+        if (code !== 0 || signal !== null) {
+          // Panics land on stderr; hdbscan's pre-panic warning lands on
+          // stdout. Prefer stderr, fall back to stdout so the only diagnostic
+          // a stdout-only child produced isn't the thing we discard.
+          const how = signal !== null ? `killed by ${signal}` : `exited ${code}`;
+          const detail = (err.trim().length > 0 ? err : out).trim().slice(0, 500);
           settle(() =>
-            reject(new ClustererError(`clusterer exited ${code}: ${err.slice(0, 500)}`))
+            reject(new ClustererError(detail.length > 0 ? `clusterer ${how}: ${detail}` : `clusterer ${how}`))
           );
           return;
         }
