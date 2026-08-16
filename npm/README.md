@@ -233,9 +233,11 @@ Two things that are easy to get wrong:
 
 Deliberately deferred work that is **not worth cutting a release for on its own**, but costs nothing folded into one that is happening anyway. If you are reading this because you are about to cut a release, do these first.
 
-- [ ] **Add `"./package.json": "./package.json"` to the `exports` map.** Version introspection currently requires `new URL('…/package.json', import.meta.url)` + `readFileSync`, because the map has only ever exposed `"."`. Two of three consumers hit this independently: hydra-recall documented it in `clusterer-version.ts`'s comment and works around it with a hand-maintained constant plus a drift test; coda-claude tripped over it with `ERR_PACKAGE_PATH_NOT_EXPORTED`. Neither *needs* the fix — both have working paths — which is why it is queued rather than shipped.
+**Nothing is queued right now.** The list below is the record of what has ridden a release, kept so the next person can see the mechanism works rather than wondering whether the section is just stale.
 
-  For the record, since the reverse claim was made and is wrong: **nothing was ever dropped.** `./package.json` has never been in this map — verified by `git log -S'"./package.json"' -- npm/package.json` returning nothing, and the map reading identically since commit `283df1a`, which created the package. A 0.2.1 "restoring" it would have documented a regression that never happened.
+- [x] **Add `"./package.json": "./package.json"` to the `exports` map.** *Landed in 0.2.1*, riding the `SubprocessClusterer` crash-reporting fix ([#34](https://github.com/mnmal-ai/holomap/issues/34)) — exactly the "release happening anyway" this was queued for. Version introspection previously required `new URL('…/package.json', import.meta.url)` + `readFileSync`, because the map exposed only `"."`. Two of three consumers hit that independently: hydra-recall documented it in `clusterer-version.ts`'s comment and worked around it with a hand-maintained constant plus a drift test; coda-claude tripped over it with `ERR_PACKAGE_PATH_NOT_EXPORTED`. Neither *needed* the fix, which is why it waited.
+
+  For the record, since the reverse claim was made and is wrong: **nothing was ever dropped.** `./package.json` had never been in this map — verified by `git log -S'"./package.json"' -- npm/package.json` returning nothing, and the map reading identically from commit `283df1a`, which created the package, until 0.2.1 added it. A 0.2.1 cut to "restore" it would have documented a regression that never happened; this one adds it as a new convenience alongside a fix that was worth releasing on its own.
 
 ### A note on visibility, corrected by observation
 

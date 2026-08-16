@@ -3,9 +3,10 @@ name: publish-npm
 # Publishes @mnmal-ai/holomap-clusterer to GitHub Packages.
 #
 # SEPARATE from publish.yml, which owns the crates.io release of the `holomap`
-# crate. The two artifacts version independently — holomap is 0.2.0 while the
-# npm package is 0.1.0 — so one trigger cannot serve both without guessing
-# which version a release commit meant.
+# crate. The two artifacts version independently — read the current numbers
+# from Cargo.toml and npm/package.json, never from prose like this comment,
+# which has no check over it and has drifted before — so one trigger cannot
+# serve both without guessing which version a release commit meant.
 #
 # TRIGGER: a merge to main whose commit subject starts with `release: npm v`.
 # The crate's workflow fires on `release: v`, and the two are mutually
@@ -15,8 +16,10 @@ name: publish-npm
 # and let this workflow own the tag. DO NOT tag by hand.
 #
 # TAG: `holomap-clusterer-vX.Y.Z`, deliberately not `vX.Y.Z` — that namespace
-# belongs to the crate and already holds v0.1.0 and v0.2.0. An npm 0.1.0
-# release tagged `v0.1.0` would collide with the crate's first release.
+# belongs to the crate and is already populated. `git tag` is the authority on
+# what is taken; an npm release tagged `vX.Y.Z` would collide with the crate's
+# releases, and the two version lines are unrelated, so a collision is likely
+# rather than hypothetical.
 #
 # VISIBILITY: this repo is public, and GitHub Packages npm packages inherit
 # repository visibility. `publishConfig.access: restricted` is an npmjs
