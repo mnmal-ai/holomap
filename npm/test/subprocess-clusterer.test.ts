@@ -82,7 +82,12 @@ describe('SubprocessClusterer', () => {
     ).rejects.toThrow(/clusterer exited 101.*core_distances/s);
   });
 
-  it('names the signal when the child is killed rather than exiting', async () => {
+  // POSIX-only by premise, not by convenience: Windows has no signals, and
+  // `process.kill()` there ignores the signal argument and terminates the
+  // target outright, so the child is reported through `code` and the `signal`
+  // branch this asserts on is unreachable. The CI matrix includes
+  // windows-latest, so this must be gated rather than left to discover.
+  it.skipIf(process.platform === 'win32')('names the signal when the child is killed rather than exiting', async () => {
     const clusterer = new SubprocessClusterer([
       process.execPath,
       '-e',
