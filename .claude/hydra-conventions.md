@@ -1,4 +1,4 @@
-<!-- hydra-conventions vsynoptic-1.5.0+09c3e55b — plugin-owned; do not edit. Edit your own CLAUDE.md instead. -->
+<!-- hydra-conventions vsynoptic-1.10.0+c6ea5fdc — plugin-owned; do not edit. Edit your own CLAUDE.md instead. -->
 
 # Hydra interaction conventions
 
@@ -22,7 +22,7 @@ Top-level `params` are not filters. Operators: `eq`, `neq`, `gt|gte|lt|lte`, `be
 { "cortext/Todo": { "params": { "where": { "status": { "eq": "open" } }, "limit": 10 }, "fields": { "id": true, "title": true } } }
 ```
 
-Retrieval-tuned handle fields (`name`, `title`, `topic`, `synopsis`, `description`) are indexed and filter freely. Long-form fields (`body`, `summary`, `notes`, `rationale`) are deliberately unindexed — a structural filter on them rejects with `unindexed_field` unless you pass `params._allowTableScan: true`. For content search, prefer `hydra_recall` (semantic) over scanning prose. `eq: null` never matches (SQL three-valued logic) — there is no is-null operator; project the field and filter client-side.
+Retrieval-tuned handle fields (`name`, `title`, `topic`, `synopsis`, `description`) are indexed and filter freely. Long-form fields (`body`, `summary`, `notes`, `rationale`) are deliberately unindexed — a structural filter on them rejects with `unindexed_field` unless you pass `params._allowTableScan: true`. For content search, prefer `hydra_recall` (semantic) over scanning prose. **`eq: null` works** — it is the is-null filter. Verified across all three field kinds: `sessionId` (crossRef), `project` (promoted scalar) and `note` (unindexed, with `_allowTableScan`) each return only rows where the field is null, and it discriminates — 37 of 762 Todos, not all 762. pg emits `IS NULL` for a null operand and the memory evaluator treats null and undefined as equal. This entry previously said the opposite and told you to project the field and filter client-side; that was false and cost a full table read every time someone followed it. Note crossRefs accept only `eq`, `in` and `nin` — `neq` is rejected with `unknown_operator`.
 
 ## Server-managed metadata
 
@@ -37,6 +37,51 @@ An array value under one op-key is one atomic transaction; each element is a ful
 ```
 
 Do NOT put the array inside `params` — that writes garbage rows.
+
+## Check `errors` before interpreting `data`
+
+**A `200` is not success, and an empty `data` is not a true negative.** Hydra returns a partial-success envelope: one frame in a multi-frame query can fail while its siblings succeed, so the status code cannot carry the answer. A rejected frame comes back with **its key absent from `data`** and the reason in `errors`:
+
+```
+HTTP 200
+data:   { "cortext/Todo": [...] }          <- the other frame is simply GONE
+errors: [{ code: "unknown_operator",
+           message: "operator 'in' is not valid for field 'trace' (kind=crossRef)",
+           path: ["coda/Claim", "where", "trace", "in"] }]
+```
+
+So `data[key] ?? []` reads a rejected query as "nothing recorded". Read `errors` first; the server names the field, the kind and the path.
+
+**The distinction `data[key] ?? []` destroys** is presence, not emptiness:
+
+| | `data` | meaning |
+|---|---|---|
+| **rejected** | key **absent** | the query never ran; `errors` says why |
+| **true negative** | key present, value `[]` | the query ran and matched nothing |
+
+`?? []` renders both as `[]`. So the check that actually holds is a positive one — **assert that every frame key you asked for came back** — and it needs no reading of `errors` at all, which makes it belt-and-braces rather than a restatement. A missing key is a fact; an empty result that surprises you is only a heuristic.
+
+This cost a full session once: an empty `data` was read as "no claims on these traces", a correct diagnosis was abandoned, and a bug was filed against a defect that did not exist.
+
+## Who you are, and who else is
+
+**Your agent identity is bound to the REPO, not to your session.** Concurrent sessions in one repo sign with the same key, and `AgentMessage` has **no sender field** — the sender is `_metadata.createdBy`, which the server derives from that key. So on the wire you are indistinguishable from every other session here.
+
+This has cost real work twice. A correction was sent to the session that had *not* made the error, while the one doing the work never saw it. A reply asked who owned two Todos that a session with the same kid had filed hours earlier.
+
+Two things follow, and the second matters more than the first.
+
+**Stamp what you send.** Your cold-start names your session; carry it as a tag:
+
+```json
+{ "cortext/sendAgentMessage": { "params": { "to": "peer@host", "subject": "...", "body": "...", "tags": ["session:1a2b3c4d"] } } }
+```
+
+`tags` is indexed, so this is filterable. Delivery stays repo-scoped deliberately — a message addressed to one session would land in a dead mailbox once that session ended, and in both failures above the intended session had already stopped being the active one. Only provenance is session-scoped, never delivery.
+
+**Say what you DID, not what you read.** The stamp is advisory: it is client-supplied, so a reader cannot verify it, and nothing stops it being omitted. What actually establishes that a message came from a session that did the work is the message *carrying* the work — a measurement, a file and line, a command and its output. A reply that only restates what it was sent is indistinguishable from one written by a session that has lost its context, because that is exactly what such a session produces.
+
+Do not write "the agent said X earlier" into any protocol. While kid is repo-scoped and sessions are not, it is unsound.
 
 ## Context store conventions
 
