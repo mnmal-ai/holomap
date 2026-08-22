@@ -1,4 +1,4 @@
-<!-- hydra-conventions vsynoptic-1.5.0+09c3e55b — plugin-owned; do not edit. Edit your own CLAUDE.md instead. -->
+<!-- hydra-conventions vsynoptic-1.12.1+db400bd6 — plugin-owned; do not edit. Edit your own CLAUDE.md instead. -->
 
 # Hydra interaction conventions
 
@@ -16,13 +16,27 @@ Every query/mutate/subscribe key is `<namespace>/<TypeOrMutation>` — e.g. `cor
 
 ## Filters live in `where`
 
-Top-level `params` are not filters. Operators: `eq`, `neq`, `gt|gte|lt|lte`, `between`, `in|nin`, `contains`, `startsWith|endsWith`. Example:
+Top-level `params` are not filters — they go in `where`. Example:
 
 ```json
 { "cortext/Todo": { "params": { "where": { "status": { "eq": "open" } }, "limit": 10 }, "fields": { "id": true, "title": true } } }
 ```
 
-Retrieval-tuned handle fields (`name`, `title`, `topic`, `synopsis`, `description`) are indexed and filter freely. Long-form fields (`body`, `summary`, `notes`, `rationale`) are deliberately unindexed — a structural filter on them rejects with `unindexed_field` unless you pass `params._allowTableScan: true`. For content search, prefer `hydra_recall` (semantic) over scanning prose. `eq: null` never matches (SQL three-valued logic) — there is no is-null operator; project the field and filter client-side.
+Retrieval-tuned handle fields (`name`, `title`, `topic`, `synopsis`, `description`) are indexed and filter freely. Long-form fields (`body`, `summary`, `notes`, `rationale`) are deliberately unindexed — a structural filter on them rejects with `unindexed_field` unless you pass `params._allowTableScan: true`. For content search, prefer `hydra_recall` (semantic) over scanning prose. **`eq: null` works** — it is the is-null filter. Verified across all three field kinds: `sessionId` (crossRef), `project` (promoted scalar) and `note` (unindexed, with `_allowTableScan`) each return only rows where the field is null, and it discriminates — 37 of 762 Todos, not all 762. pg emits `IS NULL` for a null operand and the memory evaluator treats null and undefined as equal. This entry previously said the opposite and told you to project the field and filter client-side; that was false and cost a full table read every time someone followed it.
+
+### Which operators a field accepts — ASK, do not memorise
+
+**Do not carry a list of valid operators in your head, and do not trust one written down.** Which operators a field accepts depends on its *kind* (scalar, crossRef, list, unindexed), and the server's allowlist moves on the server's release cadence, not this document's. Two enumerations were written into this fragment and both were false **within hours of shipping** — once in each direction, as the allowlist widened underneath them.
+
+The server tells you, and its answer cannot go stale:
+
+```
+operator 'contains' is not valid for field 'sessionId' (kind=crossRef)
+```
+
+That sentence names the operator, the field AND its kind. It is worth more than any list. If you need to know before trying, call `hydra_schema` for the type — it returns each field's kind, and the rejection above tells you the rest.
+
+Generalise it: anything of the form *"the server accepts exactly X, Y, Z"* has this defect. Anything of the form *"the server will tell you, here is how to read it"* does not.
 
 ## Server-managed metadata
 
@@ -37,6 +51,78 @@ An array value under one op-key is one atomic transaction; each element is a ful
 ```
 
 Do NOT put the array inside `params` — that writes garbage rows.
+
+## Check `errors` before interpreting `data`
+
+**A `200` is not success, and an empty `data` is not a true negative.** Hydra returns a partial-success envelope: one frame in a multi-frame query can fail while its siblings succeed, so the status code cannot carry the answer. A rejected frame comes back with **its key absent from `data`** and the reason in `errors`:
+
+```
+HTTP 200
+data:   { "cortext/Todo": [...] }          <- the other frame is simply GONE
+errors: [{ code: "unknown_operator",
+           message: "operator 'in' is not valid for field 'trace' (kind=crossRef)",
+           path: ["coda/Claim", "where", "trace", "in"] }]
+```
+
+So `data[key] ?? []` reads a rejected query as "nothing recorded". Read `errors` first; the server names the field, the kind and the path.
+
+**The distinction `data[key] ?? []` destroys** is presence, not emptiness:
+
+| | `data` | meaning |
+|---|---|---|
+| **rejected** | key **absent** | the query never ran; `errors` says why |
+| **true negative** | key present, value `[]` | the query ran and matched nothing |
+
+`?? []` renders both as `[]`. So the check that actually holds is a positive one — **assert that every frame key you asked for came back** — and it needs no reading of `errors` at all, which makes it belt-and-braces rather than a restatement. A missing key is a fact; an empty result that surprises you is only a heuristic.
+
+This cost a full session once: an empty `data` was read as "no claims on these traces", a correct diagnosis was abandoned, and a bug was filed against a defect that did not exist.
+
+## The mailbox
+
+Agent-to-agent mail lives in `<ns>/AgentMessage`. **Send through the mutation, never by creating the row.**
+
+```json
+{ "cortext/sendAgentMessage": { "params": { "to": "peer-claude@Host", "subject": "...", "body": "...", "inReplyTo": "<uuid>", "tags": ["session:1a2b3c4d"] } } }
+```
+
+`to` takes a kid, a list of kids, or `'*'` to broadcast. Direct `createAgentMessage` is **denied** for agent-to-agent send — the mutation is the only supported path, and it is what resolves recipients and stamps the sender.
+
+**Reading and closing.** Your cold-start renders unread mail. Two ways to clear it, and they mean different things:
+
+| | meaning |
+|---|---|
+| `ackAgentMessage { id }` | **closed from my side** — actioned, or deliberately declined |
+| `markAgentMessageRead { id }` | **owned but not done** — you have taken it and are deferring |
+
+Both are **recipient-only**, enforced against your signed identity: you cannot ack someone else's mail. And `status` is **not settable** through `updateAgentMessage` — the transitions are the only way it moves, so a patch that tries will be rejected rather than silently applied.
+
+**`inReplyTo` takes the UUID, not the shortId.** `#309` is display-only; passing it fails at the storage layer with a constraint error rather than a validation message, which reads as a server fault when it is a caller mistake. The same is true of every crossRef field.
+
+**Two failure modes worth recognising.** A message that does not appear may have been sent to a kid with no `AgentIdentity` row — routing needs the directory, not just a valid key. And an ack that appears to do nothing is usually an ack on a message addressed to someone else.
+
+## Who you are, and who else is
+
+**Your agent identity is bound to the REPO, not to your session.** Concurrent sessions in one repo sign with the same key, and `AgentMessage` has **no sender field** — the sender is `_metadata.createdBy`, which the server derives from that key. So on the wire you are indistinguishable from every other session here.
+
+This has cost real work twice. A correction was sent to the session that had *not* made the error, while the one doing the work never saw it. A reply asked who owned two Todos that a session with the same kid had filed hours earlier.
+
+**And the key is holdable by things that are not sessions at all.** A kid is a private key on disk; any process that can read it can be you — a daemon, a cron job, a CI step, a spawned SDK session. Not theoretical: a mail-sweep daemon ran for two days injecting each agent's own key into short unattended sessions it spawned to answer their mail, and every write it made was cryptographically genuine. Such sessions also leave no transcript on disk, so a quiet `~/.claude/projects` is not evidence that nothing ran. `_metadata.createdBy` and `updatedBy` answer **which key signed this**, never **who acted**.
+
+Three things follow, and they get more load-bearing as you go.
+
+**Stamp what you send.** Your cold-start names your session; carry it as a tag:
+
+```json
+{ "cortext/sendAgentMessage": { "params": { "to": "peer@host", "subject": "...", "body": "...", "tags": ["session:1a2b3c4d"] } } }
+```
+
+`tags` is indexed, so this is filterable. Delivery stays repo-scoped deliberately — a message addressed to one session would land in a dead mailbox once that session ended, and in both failures above the intended session had already stopped being the active one. Only provenance is session-scoped, never delivery.
+
+**Say what you DID, not what you read.** The stamp is advisory: it is client-supplied, so a reader cannot verify it, and nothing stops it being omitted. What actually establishes that a message came from a session that did the work is the message *carrying* the work — a measurement, a file and line, a command and its output. A reply that only restates what it was sent is indistinguishable from one written by a session that has lost its context, because that is exactly what such a session produces.
+
+**Sign as yourself, and never as anyone else.** If you build or configure anything that reaches Hydra without a human in the loop, give it its own registered identity. Never point `HYDRA_AGENT_KID` or `HYDRA_AGENT_SIGNING_KEY` at another agent — not in a unit file, a container env, an MCP server config, or a spawn call, and not to make routing work. `ackAgentMessage` enforces recipient-only against the signed principal and is otherwise sound; borrowing the key is the only way past it. What comes out the other side is a closure signal — an `acked`, a Todo flipped to done — that outlives the process by months and cannot be told from a considered one. Acting on another agent's behalf is fine; doing it invisibly is not, so put the delegation in the payload where a reader can see it.
+
+Do not write "the agent said X earlier" into any protocol, and do not infer a session from `updatedBy`. That inference sent a correction to the session that had not made the error, and later put a restart of every session on the table — both times on evidence that only ever showed which key had signed. While kid is repo-scoped and sessions are not, it is unsound.
 
 ## Context store conventions
 
