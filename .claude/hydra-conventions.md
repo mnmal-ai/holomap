@@ -1,4 +1,4 @@
-<!-- hydra-conventions vsynoptic-1.13.3+35a1af34 — plugin-owned; do not edit. Edit your own CLAUDE.md instead. -->
+<!-- hydra-conventions vsynoptic-1.16.0+c16abf83 — plugin-owned; do not edit. Edit your own CLAUDE.md instead. -->
 
 # Hydra interaction conventions
 
@@ -6,7 +6,7 @@ You are an agent consuming a Hydra `hydra-claude` coordinator. Follow these rule
 
 ## MCP first
 
-Use the `hydra` MCP tools (`hydra_schema`, `hydra_query`, `hydra_mutate`, `hydra_recall`, `hydra_nl`) for all Hydra interactions. Call `hydra_schema` first on cold-start to discover types and mutations. Fall back to HTTP only when MCP is confirmed unreachable.
+Use the `hydra` MCP tools (`hydra_schema`, `hydra_query`, `hydra_mutate`, `hydra_recall`, `hydra_whoami`, `hydra_nl`) for all Hydra interactions. Call `hydra_schema` first on cold-start to discover types and mutations. Fall back to HTTP only when MCP is confirmed unreachable.
 
 ## Qualified frame keys
 
@@ -77,6 +77,18 @@ So `data[key] ?? []` reads a rejected query as "nothing recorded". Read `errors`
 
 This cost a full session once: an empty `data` was read as "no claims on these traces", a correct diagnosis was abandoned, and a bug was filed against a defect that did not exist.
 
+## The surfaces are not interchangeable
+
+Four ways in — HTTP routes, the MCP tools, WS and SSE — and the same operation is spelled differently on each. hydra's `docs/surface-parity.md` carries the full measured matrix; what follows is only the traps, deliberately. A capability matrix is an enumeration and would rot exactly the way the operator lists above did; a shape MISMATCH between two surfaces is stable, because fixing it would break one of them.
+
+- **Schema scoping is ARGUMENTS in MCP and PATH SEGMENTS over HTTP.** `hydra_schema { namespace, type }` is `GET /hydra/schema/<ns>/<Type>`. Carrying the MCP shape across gives `GET /hydra/schema?namespace=cortext`, which answers `400` naming the path form. It used to be *silently ignored* and answered `404 unknown namespace 'default'` — an error about a namespace you never named, which reads as "cortext is missing".
+- **Recall's search text is `query` on the route and the MCP tool, and `to` on the frame.** Each rejects the other's spelling. On the frame it also sits in `params`, NOT in `where`, against the rule above — `recall/Hit` is a virtual type whose params are a search input rather than a filter.
+- **Subscribe params are a strict subset of query params.** No `limit`: the allowlist is `where`, `orderBy`, `_allowTableScan`, and it is engine-wide rather than a namespace quirk. Reusing a query's params for a subscription gets `unknown_param` — and the server names the allowed set, so read the rejection rather than guessing.
+- **Live updates are WS/SSE only.** There is no MCP subscription tool, so an MCP-only agent polls or does without.
+- **On SSE a refusal arrives IN-BAND.** The HTTP status is `200` and the failure is an `event: error` frame carrying `{ code, message }` — the same trap as the query envelope above, one layer out. Read the stream, not the status.
+
+Measured against the live stack at 5.12.0, not transcribed from a router file.
+
 ## The mailbox
 
 Agent-to-agent mail lives in `<ns>/AgentMessage`. **Send through the mutation, never by creating the row.**
@@ -135,6 +147,8 @@ Three things follow, and they get more load-bearing as you go.
 **Say what you DID, not what you read.** The stamp is advisory: it is client-supplied, so a reader cannot verify it, and nothing stops it being omitted. What actually establishes that a message came from a session that did the work is the message *carrying* the work — a measurement, a file and line, a command and its output. A reply that only restates what it was sent is indistinguishable from one written by a session that has lost its context, because that is exactly what such a session produces.
 
 **Sign as yourself, and never as anyone else.** If you build or configure anything that reaches Hydra without a human in the loop, give it its own registered identity. Never point `HYDRA_AGENT_KID` or `HYDRA_AGENT_SIGNING_KEY` at another agent — not in a unit file, a container env, an MCP server config, or a spawn call, and not to make routing work. `ackAgentMessage` enforces recipient-only against the signed principal and is otherwise sound; borrowing the key is the only way past it. What comes out the other side is a closure signal — an `acked`, a Todo flipped to done — that outlives the process by months and cannot be told from a considered one. Acting on another agent's behalf is fine; doing it invisibly is not, so put the delegation in the payload where a reader can see it.
+
+**One identity question IS answerable directly, and it is your own.** `hydra_whoami`, or `GET /hydra/whoami`, returns `{ authEnabled, identity }` — your kid plus the grant AS RECORDED, so a `*` stays `*` rather than expanding into a list. **Ask it before concluding a credential works.** On a reads-open stack an authenticated read and an anonymous one return byte-identical results, so a successful query is never evidence of identity — coda read the fleet anonymously for months on exactly that reasoning. The two empty answers are different faults: `authEnabled: false` means the deployment verifies nothing and presenting a key would change nothing, while `authEnabled: true` with `identity: null` means your own credential never arrived. A present-but-invalid token `401`s instead, so a rejected key never renders as anonymous. It is a SELF view — it answers for the process that asks, and says nothing about any other agent's key.
 
 Do not write "the agent said X earlier" into any protocol, and do not infer a session from `updatedBy`. That inference sent a correction to the session that had not made the error, and later put a restart of every session on the table — both times on evidence that only ever showed which key had signed. While kid is repo-scoped and sessions are not, it is unsound.
 
