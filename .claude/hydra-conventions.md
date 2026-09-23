@@ -1,4 +1,4 @@
-<!-- hydra-conventions vsynoptic-1.16.0+c16abf83 — plugin-owned; do not edit. Edit your own CLAUDE.md instead. -->
+<!-- hydra-conventions vsynoptic-1.23.1+155415fe — plugin-owned; do not edit. Edit your own CLAUDE.md instead. -->
 
 # Hydra interaction conventions
 
@@ -23,6 +23,8 @@ Top-level `params` are not filters — they go in `where`. Example:
 ```
 
 Retrieval-tuned handle fields (`name`, `title`, `topic`, `synopsis`, `description`) are indexed and filter freely. Long-form fields (`body`, `summary`, `notes`, `rationale`) are deliberately unindexed — a structural filter on them rejects with `unindexed_field` unless you pass `params._allowTableScan: true`. For content search, prefer `hydra_recall` (semantic) over scanning prose. **`eq: null` works** — it is the is-null filter. Verified across all three field kinds: `sessionId` (crossRef), `project` (promoted scalar) and `note` (unindexed, with `_allowTableScan`) each return only rows where the field is null, and it discriminates — 37 of 762 Todos, not all 762. pg emits `IS NULL` for a null operand and the memory evaluator treats null and undefined as equal. This entry previously said the opposite and told you to project the field and filter client-side; that was false and cost a full table read every time someone followed it.
+
+**A `field.json()` field is filtered through a PATH predicate, never directly** (hydra ≥6.3.0): `{ values: { path: ['year'], gt: 1990 } }`. Matching is type-strict — `1995` does not match `"1995"`. The equality-style predicates are index-served only when the field is declared `field.json({ indexed: true })`; anything else needs `params._allowTableScan: true`. A bare `{ values: { eq: ... } }` is refused, and the rejection names the path form — read it rather than guessing, per the next section.
 
 ### Which operators a field accepts — ASK, do not memorise
 
