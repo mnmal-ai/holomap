@@ -1,4 +1,4 @@
-<!-- hydra-conventions vsynoptic-2.7.0+e0131409 — plugin-owned; do not edit. Edit your own CLAUDE.md instead. -->
+<!-- hydra-conventions vsynoptic-2.9.0+d9ca3584 — plugin-owned; do not edit. Edit your own CLAUDE.md instead. -->
 
 # Hydra interaction conventions
 
@@ -6,7 +6,9 @@ You are an agent consuming a Hydra `hydra-claude` coordinator. Follow these rule
 
 ## MCP first
 
-Use the `hydra` MCP tools (`hydra_schema`, `hydra_query`, `hydra_mutate`, `hydra_recall`, `hydra_whoami`, `hydra_nl`) for all Hydra interactions. Call `hydra_schema` first on cold-start to discover types and mutations. Fall back to HTTP only when MCP is confirmed unreachable.
+Use the `hydra` MCP tools (`mcp__hydra__*`) for all Hydra interactions. Call `hydra_schema` first on cold-start to discover types and mutations. Fall back to HTTP only when MCP is confirmed unreachable.
+
+**The tool set comes from your machine's hydra binary, not from this document.** The MCP server is a local install and ships on hydra's version line, while this fragment ships on cortext's, and nothing couples the two. So a `No such tool available: mcp__hydra__<name>` usually means the local binary is behind the service, not that the feature was never built. Check the installed `@mnmal-ai/hydra` version against the service's `/health` before concluding anything is missing.
 
 ## Qualified frame keys
 
@@ -43,6 +45,8 @@ Generalise it: anything of the form *"the server accepts exactly X, Y, Z"* has t
 ## Server-managed metadata
 
 `createdAt`, `updatedAt`, `createdBy`, `updatedBy` are server-filled — never send them on create/update (rejected with `client_supplied_server_field`). Read them via the `_metadata` projection.
+
+**Filtering by author or time works with the names `_metadata` returns** (hydra ≥7.13.0): `where: { createdBy: { eq: '<kid>' } }`, the object form `{ createdBy: { eq: { kind: 'agent', id: '<kid>' } } }`, `createdBy.id`, and `{ _metadata: { createdAt: { gt: … } } }` all work, as do the explicit columns `createdById` / `createdByKind` / `updatedById` / `updatedByKind` / `createdAt` / `updatedAt`. The same names work in `orderBy` and subscriptions. `hydra_schema` lists them as `metadataFields` and `metadataAuthorFields`. On an older server only the explicit columns filter.
 
 ## Batched mutations
 
@@ -96,7 +100,7 @@ Measured against the live stack at 5.12.0, not transcribed from a router file.
 Agent-to-agent mail lives in `<ns>/AgentMessage`. **Send through the mutation, never by creating the row.**
 
 ```json
-{ "cortext/sendAgentMessage": { "params": { "to": "peer-claude@Host", "subject": "...", "body": "...", "inReplyTo": "<uuid>", "tags": ["session:1a2b3c4d"] } } }
+{ "cortext/sendAgentMessage": { "params": { "to": "peer-claude@Host", "subject": "...", "body": "...", "inReplyTo": "<uuid>", "instance": "session:1a2b3c4d" } } }
 ```
 
 `to` takes a kid, a list of kids, or `'*'` to broadcast. `sendAgentMessage` is the only send path — it resolves recipients and stamps the sender.
@@ -143,25 +147,35 @@ This has cost real work twice. A correction was sent to the session that had *no
 
 Three things follow, and they get more load-bearing as you go.
 
-**Stamp what you send.** Your cold-start names your session; carry it as a tag:
+**Stamp what you send.** Your cold-start names your session; pass it as `instance`:
 
 ```json
-{ "cortext/sendAgentMessage": { "params": { "to": "peer@host", "subject": "...", "body": "...", "tags": ["session:1a2b3c4d"] } } }
+{ "cortext/sendAgentMessage": { "params": { "to": "peer@host", "subject": "...", "body": "...", "instance": "session:1a2b3c4d" } } }
 ```
 
-`tags` is indexed, so this is filterable. Delivery stays repo-scoped deliberately — a message addressed to one session would land in a dead mailbox once that session ended, and in both failures above the intended session had already stopped being the active one. Only provenance is session-scoped, never delivery.
+`instance` is a field on every row the send creates, indexed and projectable, so a reader can filter on it and see two writers sharing one kid as two. It is set once and cannot be edited afterwards (cortext ≥2.8.0; older runtimes refuse the param, so use the `session:` tag there). A daemon or other process holding a kid should state what it is the same way. Delivery stays repo-scoped deliberately — a message addressed to one session would land in a dead mailbox once that session ended, and in both failures above the intended session had already stopped being the active one. Only provenance is session-scoped, never delivery.
 
-**Say what you DID, not what you read.** The stamp is advisory: it is client-supplied, so a reader cannot verify it, and nothing stops it being omitted. What actually establishes that a message came from a session that did the work is the message *carrying* the work — a measurement, a file and line, a command and its output. A reply that only restates what it was sent is indistinguishable from one written by a session that has lost its context, because that is exactly what such a session produces.
+**Say what you DID, not what you read.** The stamp is advisory, field or tag: it is client-supplied, so a reader cannot verify it, and nothing stops it being omitted. What actually establishes that a message came from a session that did the work is the message *carrying* the work — a measurement, a file and line, a command and its output. A reply that only restates what it was sent is indistinguishable from one written by a session that has lost its context, because that is exactly what such a session produces.
 
 **Sign as yourself, and never as anyone else.** If you build or configure anything that reaches Hydra without a human in the loop, give it its own registered identity. Never point `HYDRA_AGENT_KID` or `HYDRA_AGENT_SIGNING_KEY` at another agent — not in a unit file, a container env, an MCP server config, or a spawn call, and not to make routing work. `ackAgentMessage` enforces recipient-only against the signed principal and is otherwise sound; borrowing the key is the only way past it. What comes out the other side is a closure signal — an `acked`, a Todo flipped to done — that outlives the process by months and cannot be told from a considered one. Acting on another agent's behalf is fine; doing it invisibly is not, so put the delegation in the payload where a reader can see it.
 
-**One identity question IS answerable directly, and it is your own.** `hydra_whoami`, or `GET /hydra/whoami`, returns `{ authEnabled, identity }` — your kid plus the grant AS RECORDED, so a `*` stays `*` rather than expanding into a list. **Ask it before concluding a credential works.** On a reads-open stack an authenticated read and an anonymous one return byte-identical results, so a successful query is never evidence of identity — coda read the fleet anonymously for months on exactly that reasoning. The two empty answers are different faults: `authEnabled: false` means the deployment verifies nothing and presenting a key would change nothing, while `authEnabled: true` with `identity: null` means your own credential never arrived. A present-but-invalid token `401`s instead, so a rejected key never renders as anonymous. It is a SELF view — it answers for the process that asks, and says nothing about any other agent's key.
+**One identity question IS answerable directly, and it is your own.** `hydra_whoami`, or `GET /hydra/whoami`, returns `{ authEnabled, identity }` — your kid plus the grant AS RECORDED, so a `*` stays `*` rather than expanding into a list. **Ask it before concluding a credential works.** On a reads-open stack an authenticated read and an anonymous one return byte-identical results, so a successful query is never evidence of identity — coda read the fleet anonymously for months on exactly that reasoning. The two empty answers are different faults: `authEnabled: false` means the deployment verifies nothing and presenting a key would change nothing, while `authEnabled: true` with `identity: null` means your own credential never arrived. A present-but-invalid token `401`s instead, so a rejected key never renders as anonymous.
+
+**Its two fields answer for different things, though they arrive in one object.** `authEnabled` is a property of the DEPLOYMENT, and anyone can read it honestly, credential or not. `identity` is a SELF view: it answers only for the process that asks, and says nothing about any other agent's key. So ask from the session whose identity you care about, against the deployment it writes to. A bare `curl` is a different process with no signing key, so `identity: null` from one is the expected answer and is not a finding about your session. A write that lands is stronger evidence still: a message reaching a peer stamped with your kid proves the identity without asking anything.
 
 Do not write "the agent said X earlier" into any protocol, and do not infer a session from `updatedBy`. That inference sent a correction to the session that had not made the error, and later put a restart of every session on the table — both times on evidence that only ever showed which key had signed. While kid is repo-scoped and sessions are not, it is unsound.
 
 ## Context store conventions
 
 Write context as it happens, no prompt needed: **Decision** when one is made; **Todo** when a gap surfaces (close with `archived: true`); **SessionLog** at every stable milestone (with a retrieval-tuned `synopsis`); **AnchorIntent** at session boot if stale and on any focus shift. Per-project rows carry a `project` field set to the repo basename; cross-cutting rows use `project: null`.
+
+## What other hosts have installed
+
+`<ns>/HostInstall` holds one row per (host, repo): the plugin version, the conventions fragment's version, digest and state, the kid and the harness, as that repo's own cold-start last reported them. Query it before cross-host work instead of assuming, e.g. `where: { host: { eq: 'zorinmacbook' } }`. `host` is lowercase with no domain.
+
+**Check `refreshedAt` before trusting a row.** A host that stops starting sessions stops reporting, and its row keeps its last values forever. Under 24 hours old is fresh; under 7 days is quiet (probably still true); older is stale (do not rely on it; the host may be gone). **A missing row means "never reported", not "nothing installed".** `audit.mjs --fleet` renders the same classification for every host.
+
+**A row is self-reported, and any key with write access to `<ns>` can update it.** Before relying on one, project `_metadata { updatedBy }` and check it is the kid the AgentIdentity directory has working that repo on that host. The fleet audit does this check; a bare query does not.
 
 ## Agent memory
 
