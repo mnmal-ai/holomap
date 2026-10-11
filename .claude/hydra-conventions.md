@@ -1,4 +1,4 @@
-<!-- hydra-conventions vsynoptic-2.9.0+d9ca3584 — plugin-owned; do not edit. Edit your own CLAUDE.md instead. -->
+<!-- hydra-conventions vsynoptic-2.11.0+209fe331 — plugin-owned; do not edit. Edit your own CLAUDE.md instead. -->
 
 # Hydra interaction conventions
 
@@ -171,9 +171,11 @@ Write context as it happens, no prompt needed: **Decision** when one is made; **
 
 ## What other hosts have installed
 
-`<ns>/HostInstall` holds one row per (host, repo): the plugin version, the conventions fragment's version, digest and state, the kid and the harness, as that repo's own cold-start last reported them. Query it before cross-host work instead of assuming, e.g. `where: { host: { eq: 'zorinmacbook' } }`. `host` is lowercase with no domain.
+`<ns>/HostInstall` holds one row per (host, repo, harness): the plugin version, the conventions fragment's version, digest and state, and the kid, as that repo's own cold-start last reported them under that harness. Query it before cross-host work instead of assuming, e.g. `where: { host: { eq: 'zorinmacbook' } }`. `host` is lowercase with no domain.
 
 **Check `refreshedAt` before trusting a row.** A host that stops starting sessions stops reporting, and its row keeps its last values forever. Under 24 hours old is fresh; under 7 days is quiet (probably still true); older is stale (do not rely on it; the host may be gone). **A missing row means "never reported", not "nothing installed".** `audit.mjs --fleet` renders the same classification for every host.
+
+Each row also carries that cold-start's own checks: `pinState`, `mcpJsonState`, `authorityState` and `settingsState`, each `ok`, `warn` or `unknown` with a matching `…Note` naming the worst finding, plus `settingsEnv`, the non-secret switch values that session ran with. Filter on them, e.g. `where: { authorityState: { eq: 'warn' } }`. They are as fresh as `refreshedAt`, and null on rows written before cortext added them.
 
 **A row is self-reported, and any key with write access to `<ns>` can update it.** Before relying on one, project `_metadata { updatedBy }` and check it is the kid the AgentIdentity directory has working that repo on that host. The fleet audit does this check; a bare query does not.
 
