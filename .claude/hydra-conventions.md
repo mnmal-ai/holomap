@@ -1,4 +1,4 @@
-<!-- hydra-conventions vsynoptic-2.11.0+209fe331 — plugin-owned; do not edit. Edit your own CLAUDE.md instead. -->
+<!-- hydra-conventions vsynoptic-2.14.0+7959116c — plugin-owned; do not edit. Edit your own CLAUDE.md instead. -->
 
 # Hydra interaction conventions
 
@@ -177,7 +177,7 @@ Write context as it happens, no prompt needed: **Decision** when one is made; **
 
 Each row also carries that cold-start's own checks: `pinState`, `mcpJsonState`, `authorityState` and `settingsState`, each `ok`, `warn` or `unknown` with a matching `…Note` naming the worst finding, plus `settingsEnv`, the non-secret switch values that session ran with. Filter on them, e.g. `where: { authorityState: { eq: 'warn' } }`. They are as fresh as `refreshedAt`, and null on rows written before cortext added them.
 
-**A row is self-reported, and any key with write access to `<ns>` can update it.** Before relying on one, project `_metadata { updatedBy }` and check it is the kid the AgentIdentity directory has working that repo on that host. The fleet audit does this check; a bare query does not.
+**A row is self-reported, and any key with write access to `<ns>` can update it.** Before relying on one, project `_metadata { updatedBy }` and check it is the kid the AgentIdentity directory has working that repo on that host, or an identity on that host flagged `roaming: true` (one that works whichever repo it is sent into, such as a reviewer). The fleet audit does this check; a bare query does not.
 
 ## Agent memory
 
