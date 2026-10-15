@@ -1,4 +1,4 @@
-<!-- hydra-conventions vsynoptic-2.15.0+c6332112 — plugin-owned; do not edit. Edit your own CLAUDE.md instead. -->
+<!-- hydra-conventions vsynoptic-2.16.0+e924420d — plugin-owned; do not edit. Edit your own CLAUDE.md instead. -->
 
 # Hydra interaction conventions
 
@@ -185,9 +185,9 @@ Each row also carries that cold-start's own checks: `pinState`, `mcpJsonState`, 
 
 Memory is scoped by the `project` field on each row (repo basename), **not** by which directory the file sits in. Cross-cutting rows use `project: null`.
 
-**Reading:** the cold-start injection above is the source of truth — look for `## Agent Memory (from cortext/Memory — N total, M top)`, or `## Agent Memory (hybrid recall — RRF, unified)` when server-side recall is available. For anything not in that block, `hydra_recall` (semantic) beats scanning prose.
+**Reading:** memory is **not preloaded**. The cold-start's `## Agent Memory — not preloaded` block carries only the anchor and how to recall. When a task touches prior work, call `hydra_recall` with `namespace`, a topic `query` and `type: "Memory"` (or `"SessionLog"` / `"Decision"`; the tool defaults to Decision), scoped with `where: { project: { in: ["<repo>", null] } }`. Or query `<ns>/Memory` by `name`. `HYDRA_COLD_START_MEMORY=full` in settings `env` restores the preloaded block.
 
-**Writing:** `cortext/createMemory`. Check for an existing row covering the same fact and update it rather than creating a duplicate.
+**Writing:** `cortext/createMemory`. Recall first: update an existing row covering the same fact rather than creating a duplicate.
 
 ## Cold-start
 
