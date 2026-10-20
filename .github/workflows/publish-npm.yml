@@ -1,6 +1,9 @@
 name: publish-npm
 
-# Publishes @mnmal-ai/holomap-clusterer to GitHub Packages.
+# Publishes @mnmal-ai/holomap-clusterer to npmjs.com via npm trusted
+# publishing (OIDC). No long-lived token exists anywhere: the registry trusts
+# this repo + this filename + the `release` environment, which is why neither
+# name may change without re-registering the trusted publisher on npmjs.
 #
 # SEPARATE from publish.yml, which owns the crates.io release of the `holomap`
 # crate. The two artifacts version independently — read the current numbers
@@ -21,14 +24,11 @@ name: publish-npm
 # releases, and the two version lines are unrelated, so a collision is likely
 # rather than hypothetical.
 #
-# VISIBILITY: this repo is public, and GitHub Packages npm packages inherit
-# repository visibility. `publishConfig.access: restricted` is an npmjs
-# concept and does not make the package private here — it will be publicly
-# listed. It is not, however, publicly *installable* without effort: the
-# GitHub Packages npm registry requires an authenticated token for every read,
-# including public packages. If genuine privacy is ever required, the package
-# has to be published from a private repository; nothing in this file can
-# achieve it.
+# npmjs side (one-time, web UI): package Settings → Trusted Publisher → GitHub Actions
+#   Organization or user: mnmal-ai
+#   Repository:           holomap
+#   Workflow filename:    publish-npm.yml
+#   Environment:          release
 
 on:
   push:
@@ -41,9 +41,7 @@ on:
   # the gates and the already-published guard run identically on this path.
   workflow_dispatch:
 
-permissions:
-  contents: write # tag + push the release tag
-  packages: write # publish to GitHub Packages
+permissions: {}
 
 jobs:
   publish:
@@ -53,6 +51,9 @@ jobs:
     if: "github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'release: npm v')"
     runs-on: ubuntu-latest
     environment: release
+    permissions:
+      contents: write # tag + push the release tag
+      id-token: write # OIDC token exchange for npm trusted publishing
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -71,18 +72,15 @@ jobs:
       - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
         with: { version: 10 }
 
-      # registry-url writes the ~/.npmrc that pnpm will trust for credentials.
-      # The committed npm/.npmrc maps the scope but deliberately carries no
-      # token — pnpm >=11 ignores credentials from a project .npmrc precisely
-      # so a committed file cannot leak one.
+      # No registry-url: npmjs is the default registry and OIDC needs no
+      # ~/.npmrc. Node 22 resolves to the latest 22.x, above the >=22.14.0
+      # that npm trusted publishing requires.
       - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v5.0.0
         with:
           node-version: 22
-          registry-url: https://npm.pkg.github.com
-          scope: '@mnmal-ai'
 
       # Green-gate before anything irreversible. A publish cannot be undone —
-      # GitHub Packages will not let the same version be republished — so
+      # npmjs never lets a version number be reused, even after unpublish — so
       # every gate runs first, exactly as publish.yml does for the crate.
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -113,6 +111,7 @@ jobs:
         id: ver
         working-directory: npm
         run: |
+          # shellcheck disable=SC2016 # the $ signs are JavaScript, not shell
           node -e '
             const v = require("./package.json").version;
             // Anchored to the WHOLE string. A shell `grep -Ex` was tried here
@@ -136,25 +135,31 @@ jobs:
       - name: Guard against republishing
         working-directory: npm
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          if npm view "@mnmal-ai/holomap-clusterer@${VERSION}" version >/dev/null 2>&1; then
+          if npm view "@mnmal-ai/holomap-clusterer@${VERSION}" version --registry https://registry.npmjs.org >/dev/null 2>&1; then
             echo "@mnmal-ai/holomap-clusterer@${VERSION} is already published — bump the version in npm/package.json"
             exit 1
           fi
           echo "version ${VERSION} is unpublished; proceeding"
 
-      # `prepack` (build:wasm && build) runs automatically here, so dist/ and
-      # wasm/ are produced from this exact commit rather than from whatever a
+      # `pnpm pack` runs `prepack` (build:wasm && build), so dist/ and wasm/
+      # are produced from this exact commit rather than from whatever a
       # developer happened to have on disk. Both are gitignored for that
-      # reason. --no-git-checks because the runner is on a detached-ish
-      # checkout and pnpm would otherwise refuse over branch/cleanliness.
+      # reason.
+      #
+      # pnpm packs, npm publishes. Trusted publishing is implemented in the npm
+      # CLI (>= 11.5.1); pnpm 10 has no documented OIDC exchange, so the
+      # tarball is handed to a pinned npm instead. The package has no
+      # workspace:/catalog: refs, so pnpm's publish-time rewriting is not
+      # needed. Provenance is attached automatically by trusted publishing.
+      - name: Pack
+        working-directory: npm
+        run: pnpm pack --pack-destination "$RUNNER_TEMP/pkg"
+
       - name: Publish
         working-directory: npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: pnpm publish --no-git-checks
+        run: npx --yes npm@11.21.0 publish "$RUNNER_TEMP"/pkg/*.tgz --access public
 
       - name: Tag the release
         env:
