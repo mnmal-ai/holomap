@@ -1,0 +1,11 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "packageRules": [
+    {
+      "description": "@mnmal-ai packages move with their own releases, not with Renovate.",
+      "matchPackageNames": ["@mnmal-ai/**"],
+      "enabled": false
+    }
+  ]
+}
