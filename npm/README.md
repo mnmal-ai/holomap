@@ -206,13 +206,7 @@ The package exports both classes and takes no view on how you select one. The pa
 
 ## Install
 
-`@mnmal-ai/*` packages resolve from GitHub Packages. Route the scope in your `.npmrc`:
-
-```
-@mnmal-ai:registry=https://npm.pkg.github.com
-```
-
-Supply the auth token from a source pnpm trusts — `~/.npmrc` locally, a CI auth step in workflows. Never put a credential in a committed project `.npmrc`; pnpm ≥11 ignores it there anyway, deliberately.
+Public on npmjs.com; no registry setup or token needed.
 
 ```sh
 pnpm add @mnmal-ai/holomap-clusterer
@@ -222,7 +216,7 @@ pnpm add @mnmal-ai/holomap-clusterer
 
 ### Cutting a release
 
-`.github/workflows/publish-npm.yml` owns it. Ride a `release/npm-vX.Y.Z` branch, bump the version in `npm/package.json`, and set the merge commit subject to `release: npm vX.Y.Z`. The workflow gates on the full suite, refuses a version already on the registry, publishes, and pushes a `holomap-clusterer-vX.Y.Z` tag. **Do not tag by hand** — the workflow owns the tag.
+`.github/workflows/publish-npm.yml` owns it. Ride a `release/npm-vX.Y.Z` branch, bump the version in `npm/package.json`, and set the merge commit subject to `release: npm vX.Y.Z`. The workflow gates on the full suite, refuses a version already on the registry, waits for approval on the `release` environment, publishes to npmjs.com through trusted publishing (no token), and pushes a `holomap-clusterer-vX.Y.Z` tag. **Do not tag by hand** — the workflow owns the tag.
 
 Two things that are easy to get wrong:
 
@@ -238,16 +232,6 @@ Deliberately deferred work that is **not worth cutting a release for on its own*
 - [x] **Add `"./package.json": "./package.json"` to the `exports` map.** *Landed in 0.2.1*, riding the `SubprocessClusterer` crash-reporting fix ([#34](https://github.com/mnmal-ai/holomap/issues/34)) — exactly the "release happening anyway" this was queued for. Version introspection previously required `new URL('…/package.json', import.meta.url)` + `readFileSync`, because the map exposed only `"."`. Two of three consumers hit that independently: one worked around it with a hand-maintained constant plus a drift test; another tripped over it with `ERR_PACKAGE_PATH_NOT_EXPORTED`. Neither *needed* the fix, which is why it waited.
 
   For the record, since the reverse claim was made and is wrong: **nothing was ever dropped.** `./package.json` had never been in this map — verified by `git log -S'"./package.json"' -- npm/package.json` returning nothing, and the map reading identically from commit `283df1a`, which created the package, until 0.2.1 added it. A 0.2.1 cut to "restore" it would have documented a regression that never happened; this one adds it as a new convenience alongside a fix that was worth releasing on its own.
-
-### A note on visibility, corrected by observation
-
-A GitHub Packages npm package inherits **repository** visibility **at publish time**, and `publishConfig.access` — an npmjs concept — does not override it. That much held.
-
-What did *not* hold is the assumption that it tracks the repository afterwards. This repo was private when `0.1.0` was published and went public shortly after; the package **stayed private**, and there is no REST endpoint to change it (`PATCH /orgs/{org}/packages/npm/{name}` returns 404). Package visibility is a one-time inheritance plus a manual setting, not a mirror.
-
-Practically it makes little difference either way: the GitHub Packages npm registry demands an authenticated token for **every** read, public packages included. "Public" there means listed, not installable-by-strangers.
-
-The consequence worth keeping: if you want a package's visibility to differ from what it inherited, that is a deliberate act in the package settings UI — not something a workflow, `publishConfig`, or a later repo change will do for you.
 
 ## Building the wasm artifact
 
