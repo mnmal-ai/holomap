@@ -17,6 +17,10 @@ name: publish
 on:
   push:
     branches: [main]
+  # Manual retry path, for the same reason publish-npm.yml has one: a failure
+  # after the release commit has landed must not require inventing a second
+  # commit with the same subject.
+  workflow_dispatch:
 
 permissions: {}
 
@@ -32,7 +36,9 @@ jobs:
   # sit beside a credential that can publish or push.
   verify:
     # only on a release merge commit
-    if: "startsWith(github.event.head_commit.message, 'release: v')"
+    # head_commit does not exist on workflow_dispatch, so short-circuit on the
+    # event name first or every manual run silently skips the job.
+    if: "github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'release: v')"
     runs-on: ubuntu-latest
     permissions:
       contents: read
