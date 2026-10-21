@@ -104,6 +104,14 @@ umap-learn's 0.955; swiss roll 0.991 vs 0.990. Wall-clock at 1k×50-d points:
 
 Deliberately out of scope: GPU, parametric/supervised UMAP, densMAP, plotting, unseeded code paths. The crate's identity is **small, auditable, deterministic** — generality is resisted on purpose.
 
+## Development
+
+    cargo fmt --check
+    cargo clippy --workspace --all-targets --all-features -- -D warnings
+    cargo test --workspace --all-features
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for pull requests and labels, and [SECURITY.md](SECURITY.md) to report a vulnerability.
+
 ## License
 
-MIT OR Apache-2.0, at your option.
+MIT OR Apache-2.0, at your option: [LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE).
