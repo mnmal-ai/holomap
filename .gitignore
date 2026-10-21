@@ -16,7 +16,7 @@ npm/wasm/
 
 # Machine-local agent config — never commit
 .mcp.json
-.claude/
+.claude/settings.local.json
 CLAUDE.local.md
 
 # Internal plans, specs and review notes live outside the repo (__docs__/<repo>/).
