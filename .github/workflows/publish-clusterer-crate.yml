@@ -22,20 +22,6 @@ name: publish-clusterer-crate
 # simply fail mid-workflow after the crate had already been published, which
 # is unrecoverable. A clumsy name is a cheap price for that.
 #
-# ── ONE-TIME SETUP REQUIRED BEFORE THIS CAN EVER SUCCEED ──────────────────
-#
-# crates.io Trusted Publishing is configured per crate, on that crate's
-# settings page — which requires the crate to exist. `holomap-clusterer` has
-# never been published, so the FIRST publish cannot use OIDC and this workflow
-# will fail at the auth step until one of these is done:
-#
-#   (a) publish 0.1.0 once from a machine with a crates.io token —
-#         cargo publish -p holomap-clusterer
-#       then add the trusted publisher below and use this workflow thereafter;
-#   (b) or, if crates.io now supports pre-registering a trusted publisher for
-#       an unpublished name, do that instead. This was NOT verified — check
-#       the publish settings UI before assuming (a) is necessary.
-#
 # crates.io side (one-time, web UI): crate Settings → Trusted Publishing → add
 #   Repository owner:  mnmal-ai
 #   Repository name:   holomap
