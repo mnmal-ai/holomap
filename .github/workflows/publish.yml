@@ -18,18 +18,36 @@ on:
   push:
     branches: [main]
 
-permissions:
-  contents: write   # tag + push the release tag
-  id-token: write   # OIDC token exchange for crates.io
+permissions: {}
+
+# Never cancel: a run cut short between the crates.io publish and the tag
+# leaves a release half-done.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  publish:
+  # Everything that compiles or runs repo or dependency code happens here, with
+  # a read-only token and no OIDC: build scripts, proc macros and tests never
+  # sit beside a credential that can publish or push.
+  verify:
     # only on a release merge commit
     if: "startsWith(github.event.head_commit.message, 'release: v')"
     runs-on: ubuntu-latest
-    environment: release
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
     steps:
+      - name: Refuse anything but main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::publishing runs only from refs/heads/main, not $GITHUB_REF"
+          exit 1
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable as of 2026-06-07
 
@@ -37,6 +55,11 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace --all-features
+
+      # What `cargo publish` would otherwise verify: the packaged crate, built
+      # from the .crate contents rather than the workspace. publish runs with
+      # --no-verify, so this is the only place it happens.
+      - run: cargo package --locked
 
       # Selected BY NAME, not packages[0]. This is a workspace with two
       # published crates, and `cargo metadata` makes no ordering guarantee.
@@ -81,18 +104,44 @@ jobs:
             exit 1
           fi
 
+  # Holds the OIDC token, and runs no repo or dependency code beside it:
+  # --no-verify packages and uploads without compiling, so no build.rs or
+  # proc macro executes. Verification already happened in verify.
+  publish:
+    needs: [verify]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      id-token: write # OIDC token exchange for crates.io
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable as of 2026-06-07
+
       - name: Authenticate to crates.io (OIDC)
         uses: rust-lang/crates-io-auth-action@bbd81622f20ce9e2dd9622e3218b975523e45bbe # v1.0.4
         id: auth
 
       - name: Publish
-        run: cargo publish
+        run: cargo publish --no-verify --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
+  release:
+    needs: [verify, publish]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # tag + push the release tag
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Tag the release
         env:
-          VERSION: ${{ steps.ver.outputs.version }}
+          VERSION: ${{ needs.verify.outputs.version }}
         run: |
           # annotated tags need a committer identity, which the runner lacks
           git config user.name "github-actions[bot]"

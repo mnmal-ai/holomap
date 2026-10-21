@@ -13,8 +13,8 @@
   },
   "files": ["dist", "wasm", "README.md", "LICENSE-MIT", "LICENSE-APACHE", "THIRD-PARTY-LICENSES"],
   "publishConfig": {
-    "registry": "https://npm.pkg.github.com",
-    "access": "restricted"
+    "registry": "https://registry.npmjs.org",
+    "access": "public"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
