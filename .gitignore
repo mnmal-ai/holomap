@@ -21,3 +21,8 @@ CLAUDE.local.md
 
 # Internal plans, specs and review notes live outside the repo (__docs__/<repo>/).
 docs/superpowers/
+
+# The cortext conventions fragment is installed per machine by /substrate-setup
+# and imported from CLAUDE.local.md, so contributors without Cortext never load it.
+.claude/substrate-conventions.md
+CLAUDE.local.md
