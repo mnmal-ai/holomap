@@ -19,7 +19,7 @@ holomap = { version = "0.3", path = "../.." }
 [dev-dependencies]
 # Pins the reference corpus by content, not just by shape. The fixture lives
 # outside this repo and nothing versions it — see tests/fixture_regression.rs.
-sha2 = "0.10"
+sha2 = "0.11"
 
 [[bin]]
 name = "holomap-clusterer"
