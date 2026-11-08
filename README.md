@@ -110,7 +110,7 @@ Deliberately out of scope: GPU, parametric/supervised UMAP, densMAP, plotting, u
     cargo clippy --workspace --all-targets --all-features -- -D warnings
     cargo test --workspace --all-features
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for pull requests and labels, and [SECURITY.md](SECURITY.md) to report a vulnerability.
+See [CONTRIBUTING.md](CONTRIBUTING.md) to report a bug or suggest an idea, and [SECURITY.md](SECURITY.md) to report a vulnerability.
 
 ## License
 

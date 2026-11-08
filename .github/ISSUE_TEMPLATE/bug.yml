@@ -1,0 +1,48 @@
+name: Bug
+description: Something holomap does wrong. Write it so an agent can reproduce it without asking.
+labels: [fix]
+body:
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+      description: What you saw, including the full error message.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce it
+      description: The smallest program that shows it, with the input size, params and seed. Use example data, never real records.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The `holomap` crate version, or the `@mnmal-ai/holomap-clusterer` npm version.
+    validations:
+      required: true
+  - type: dropdown
+    id: env
+    attributes:
+      label: Package
+      options:
+        - Rust crate
+        - npm (wasm)
+        - Not relevant
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Log lines around the failure, if you have them.
+      render: text
