@@ -1,6 +1,6 @@
 # holomap
 
-Deterministic UMAP in Rust: the same input, params and seed give a bit-identical embedding. The README states the contract and its envelope, and CONTRIBUTING.md covers PRs and labels.
+Deterministic UMAP in Rust: the same input, params and seed give a bit-identical embedding. The README states the contract and its envelope.
 
 ## Layout
 

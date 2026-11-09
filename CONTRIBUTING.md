@@ -1,29 +1,7 @@
 # Contributing
 
-Work happens on a branch and lands on `main` through a pull request. `main` takes no direct pushes or force-pushes, and review threads must be resolved before merge.
+We don't accept pull requests.
 
-## Before you open a PR
+If you've found a bug or have an idea, [open an issue](https://github.com/mnmal-ai/holomap/issues/new/choose) using one of the forms. Issues written by your agent are welcome: say what you ran, what you expected and what happened instead, with the smallest example that shows it. Our agents work from issues and usually turn them around quickly.
 
-    cargo fmt --check
-    cargo clippy --workspace --all-targets --all-features -- -D warnings
-    cargo test --workspace --all-features
-
-For `npm/`, run `bash scripts/build-wasm.sh`, then `pnpm install && pnpm check-types && pnpm test` inside `npm/`.
-
-## Labels
-
-The `PR hygiene` check requires every ready PR to carry:
-
-| Kind | Rule | Labels |
-|---|---|---|
-| Area | at least one | the crate the PR touches (`holomap`, or `holomap-clusterer` for the clusterer crate and its npm wrapper), or `repo` for root-level changes |
-| Type | exactly one | `feat`, `fix`, `refactor`, `docs`, `test`, `infra` |
-| Priority | exactly one | `P0-critical`, `P1-high`, `P2-medium`, `P3-low` |
-
-It also requires an assignee. Status labels (`blocked`, `needs-review`, `ready-to-merge`) are optional.
-
-If you can't set labels or assignees on your PR, leave them: a maintainer will. The check fails until then, and that's expected.
-
-## Releases
-
-Releases publish from `main` through the `publish*.yml` workflows, using trusted publishing behind a protected `release` environment. AGENTS.md lists the commit subject that triggers each one. Don't tag or publish by hand.
+To report a security vulnerability, don't open an issue. See [SECURITY.md](SECURITY.md).
