@@ -96,7 +96,10 @@ const NOISE_BAND: std::ops::RangeInclusive<f64> = 10.0..=35.0;
 fn load_fixture(path: &str) -> Vec<Vec<f32>> {
     let raw = std::fs::read_to_string(path).expect("fixture readable");
 
-    let digest = format!("{:x}", Sha256::digest(raw.as_bytes()));
+    let digest: String = Sha256::digest(raw.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
     assert_eq!(
         digest, FIXTURE_SHA256,
         "\nreference corpus at {path} is NOT the file these figures were measured against.\

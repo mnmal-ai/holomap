@@ -18,9 +18,9 @@ include = ["src/**", "examples/**", "/README.md", "/LICENSE-APACHE", "/LICENSE-M
 [dependencies]
 libm = "0.2.16"
 nalgebra = { version = "0.35.0", default-features = false, features = ["std"] }
-ndarray = { version = "0.16", optional = true }
-rand = { version = "0.9", default-features = false }
-rand_pcg = "0.9"
+ndarray = { version = "0.17", optional = true }
+rand = { version = "0.10", default-features = false }
+rand_pcg = "0.10"
 serde = { version = "1", features = ["derive"], optional = true }
 
 [dev-dependencies]
