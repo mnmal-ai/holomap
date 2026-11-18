@@ -56,9 +56,12 @@ pub fn exact_knn(data: &[f32], n_features: usize, k: usize, metric: Metric) -> K
     };
     let mut rows: Vec<Vec<(f32, u32)>> = Vec::with_capacity(n);
     for i in 0..n {
-        // self is distance-0 and always in the sel smallest; forcing it to
-        // 0.0 avoids a ±ULP residue from running the metric on itself,
-        // which would poison Stage 2's first-non-zero rho rule
+        // seed the self slot at exactly 0.0 rather than running the metric on
+        // a point against itself: cosine of a point with itself leaves a ±ULP
+        // residue that poisons Stage 2's first-non-zero rho rule. Self is not
+        // guaranteed to survive — lower-indexed exact duplicates tie at zero
+        // and the (distance,index) tie-break evicts it, matching the
+        // reference's full sort; the 0.0 seed only fixes the value when present
         let row: Vec<(f32, u32)> = if sel > 0 {
             vec![(0.0, i as u32)]
         } else {

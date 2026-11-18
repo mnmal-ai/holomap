@@ -99,8 +99,8 @@ pub fn optimize_embedding(
 
             // attractive update — both endpoints move (move_other = true).
             // hi_powf runs once per attractive and once per repulsive update:
-            // this libm::pow is the measured ~1.35x throughput floor the
-            // README cites (3.37s→4.55s on 1000×50-d), not overhead to trim.
+            // this libm::pow is the measured ~1.35x throughput floor (README),
+            // 3.37s→4.55s on 1000×50-d as recorded in src/fmath.rs — a floor,
             // x^b and x^(b-1) share no bit-identical subexpression (b≈0.758 is
             // irrational) and x^(b-1)=x^b/x is out of bounds — any replacement
             // breaks the bit-identical contract, so do not "optimise" this pow.

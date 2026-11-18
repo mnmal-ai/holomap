@@ -65,10 +65,15 @@ pub fn fuzzy_simplicial_set(knn: &Knn, calib: &SmoothKnn) -> FuzzyGraph {
     coords.dedup();
 
     // merge-style lookup: directed and transposed are both sorted by the
-    // coord they answer, coords is sorted; the pointers only advance, so
-    // total work is O(|coords| + |directed|) instead of a binary search
-    // per coord. Ties cannot happen (each directed edge appears once per
-    // (row, col)), so equality consumes exactly one entry.
+    // coord they answer, coords is sorted; the pointers only advance, so the
+    // lookup pass itself is O(|coords| + |directed|) instead of a binary
+    // search per coord. This is a restructure, not an asymptotic win: building
+    // `transposed` copies the edge list and re-sorts it in O(m log m), which
+    // sits at the same order as the binary searches it replaces. It buys
+    // locality (one forward pass, no random probes per coord) at the cost of a
+    // second copy; measure before claiming a gain. Ties cannot happen (each
+    // directed edge appears once per (row, col)), so equality consumes exactly
+    // one entry.
     let mut pi = 0;
     let mut pt = 0;
     let mut rows = Vec::with_capacity(coords.len());
