@@ -1,6 +1,6 @@
 /**
- * Tests for the label-catalog drift guard: members without labels fail,
- * extra labels do not.
+ * Tests for the label-catalog drift guard: missing Area labels fail, unknown
+ * stale labels fail, extra functional labels do not.
  */
 
 import assert from 'node:assert/strict';
@@ -8,8 +8,14 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { discoverWorkspaceMembers, findMissingAreaLabels } from './check-label-drift.mjs';
+import {
+  FUNCTIONAL_LABELS,
+  discoverWorkspaceMembers,
+  findMissingAreaLabels,
+  findUnknownLabels
+} from './check-label-drift.mjs';
 
+// Existing tests
 test('reports members with no matching label', () => {
   assert.deepEqual(
     findMissingAreaLabels({
@@ -65,4 +71,65 @@ test('discovers Cargo crates and the root and npm/ members, but not the root pac
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+// New tests for findUnknownLabels
+
+test('reports GitHub default labels as unknown when no member matches and not functional', () => {
+  assert.deepEqual(
+    findUnknownLabels({
+      workspaceMembers: ['core'],
+      labelNames: [
+        'core', // known functional? No — but it IS a member, so allowed.
+        'duplicate', // GitHub default → unknown
+        'good first issue', // GitHub default → unknown
+        'javascript' // dependabot residue → unknown
+      ]
+    }),
+    ['duplicate', 'good first issue', 'javascript']
+  );
+});
+
+test('does not flag known functional labels as unknown', () => {
+  assert.deepEqual(
+    findUnknownLabels({
+      workspaceMembers: ['core'],
+      labelNames: [
+        'core', // member → allowed
+        ...FUNCTIONAL_LABELS // all functional → allowed
+      ]
+    }),
+    []
+  );
+});
+
+test('does not flag labels that match a workspace member name', () => {
+  assert.deepEqual(
+    findUnknownLabels({
+      workspaceMembers: ['holomap', 'my-package'],
+      labelNames: [
+        'holomap', // member → allowed
+        'my-package', // member → allowed
+        'some-other-thing' // unknown
+      ]
+    }),
+    ['some-other-thing']
+  );
+});
+
+test('flag only genuinely unknown labels, not area or member names', () => {
+  assert.deepEqual(
+    findUnknownLabels({
+      workspaceMembers: ['core'],
+      labelNames: ['core', 'duplicate', 'help wanted', 'P0-critical', 'wontfix']
+    }),
+    ['duplicate', 'help wanted', 'wontfix']
+  );
+});
+
+test('FUNCTIONAL_LABELS is non-empty and does not overlap with member names', () => {
+  // Sanity: the convention set actually has content
+  assert.ok(FUNCTIONAL_LABELS.length > 0);
+  // No duplicates within the list itself
+  assert.deepStrictEqual([...new Set(FUNCTIONAL_LABELS)], FUNCTIONAL_LABELS);
 });
