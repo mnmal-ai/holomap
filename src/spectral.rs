@@ -126,12 +126,15 @@ fn multi_component_layout(
                 continue;
             }
             let o = &meta[other * dim..(other + 1) * dim];
-            let d: f64 = mine
-                .iter()
-                .zip(o)
-                .map(|(a, b)| (a - b).powi(2))
-                .sum::<f64>()
-                .sqrt();
+            // Explicit index loop — same f64 left-fold accumulation order as
+            // the old .iter().zip(o).map(|(a,b)| (a-b).powi(2)).sum::<f64>().sqrt()
+            // version, now avoiding iterator overhead per component pair.
+            let mut s = 0.0_f64;
+            for x in 0..dim {
+                let diff = mine[x] - o[x];
+                s += diff * diff;
+            }
+            let d: f64 = s.sqrt();
             if d > 0.0 && d < nearest {
                 nearest = d;
             }
