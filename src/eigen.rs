@@ -223,7 +223,15 @@ fn lanczos_eigenpairs(lap: &Laplacian, k: usize) -> EigenPairs {
 }
 
 fn dot(a: &[f64], b: &[f64]) -> f64 {
-    a.iter().zip(b).map(|(x, y)| x * y).sum()
+    // Explicit index loop: LLVM vectorizes this into `movsd`/`mulsd`/`addsd`
+    // on SSE/AVX (and may fuse further on FMA). Summation order and precision
+    // are unchanged from the iterator version, so determinism holds bit-for-bit.
+    let n = std::cmp::min(a.len(), b.len());
+    let mut s: f64 = 0.0;
+    for i in 0..n {
+        s += a[i] * b[i];
+    }
+    s
 }
 
 fn normalize(v: &mut [f64]) {
@@ -335,11 +343,70 @@ mod tests {
     }
 
     #[test]
-    fn lanczos_is_bit_identical_across_runs() {
-        let lap = wiggly(150);
-        let a = lanczos_eigenpairs(&lap, 3);
-        let b = lanczos_eigenpairs(&lap, 3);
-        assert_eq!(a.values, b.values);
-        assert_eq!(a.vectors, b.vectors);
+    fn lanczos_determinism_forced_lanczos_path() {
+        // 4_096-vertex undirected graph with varied edge weights (n > DENSE_THRESHOLD=2000, forces Lanczos path)
+        let n: usize = 4_096;
+        let n_u32 = n as u32;
+        let mut coo: Vec<(u32, u32, f32)> = vec![];
+
+        // Each vertex connects to i+1 and i-1 with hashed weights (non-degenerate graph)
+        for i in 0..n {
+            let a = i as u32;
+            let b_1 = a.wrapping_add(1).wrapping_rem(n_u32);
+            let w_1 = ((a.wrapping_mul(b_1)) % 65536u32) as f32 / 65536.0 + 0.5f32;
+            coo.push((a, b_1, w_1));
+
+            let b_2 = a.wrapping_add(65535).wrapping_rem(n_u32); // i-1 mod n
+            let w_2 = ((b_2.wrapping_mul(a)) % 65536u32) as f32 / 65536.0 + 0.5f32;
+            coo.push((a, b_2, w_2));
+        }
+
+        // Add chords for spectral non-degeneracy (vertices i connect to i*7 % n)
+        for i in 0..n {
+            let a = i as u32;
+            let b = a.wrapping_mul(7u32).wrapping_rem(n_u32);
+            if a != b {
+                coo.push((a, b, 0.2f32));
+                coo.push((b, a, 0.2f32)); // reverse edge for symmetric undirected graph
+            }
+        }
+
+        coo.sort_unstable_by_key(|&(r, c, _)| (r, c));
+        let lap = Laplacian::new(&FuzzyGraph {
+            n,
+            rows: coo.iter().map(|e| e.0).collect(),
+            cols: coo.iter().map(|e| e.1).collect(),
+            vals: coo.iter().map(|e| e.2).collect(),
+        });
+
+        // Force Lanczos path; run 4 times — all must be bit-identical
+        let results = (0..4)
+            .map(|_| lanczos_eigenpairs_for_test(&lap, 3))
+            .collect::<Vec<_>>();
+        for i in 1..results.len() {
+            assert_eq!(
+                results[i].values, results[0].values,
+                "run {} values differ from run 0: {:?}",
+                i, results[i].values
+            );
+            assert_eq!(
+                results[i].vectors, results[0].vectors,
+                "run {} vectors differ from run 0",
+                i
+            );
+        }
+
+        // Also directly verify dot() determinism across repeated calls on a large vector
+        let d: Vec<f64> = (0..200_000)
+            .map(|i| (i as f64 * 0.7918 + 0.3f64) % 1.0)
+            .collect();
+        let first_dot = dot(&d, &d);
+        for _ in 0..5 {
+            assert_eq!(
+                dot(&d, &d),
+                first_dot,
+                "dot() not deterministic across repeated calls"
+            );
+        }
     }
 }
