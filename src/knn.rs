@@ -7,6 +7,8 @@
 //! lower-indexed duplicate; Stage 2 zeroes self-edges, so this matches
 //! umap-learn's behaviour on the same lists.
 
+use std::cmp::Ordering;
+
 use crate::metric::{Metric, cosine, euclidean};
 
 /// kNN graph in row-major `n × k` layout.
@@ -28,6 +30,13 @@ pub fn exact_knn(data: &[f32], n_features: usize, k: usize, metric: Metric) -> K
     let mut indices = Vec::with_capacity(n * k);
     let mut dists = Vec::with_capacity(n * k);
     let mut row: Vec<(f32, u32)> = Vec::with_capacity(n);
+    // (distance, index) total order — total_cmp keeps the order total and
+    // deterministic; ties broken by lower index. Indices are unique per row,
+    // so the k smallest form a unique set and their sorted order is unique
+    // — partial sort is bit-identical to a full sort + take(k).
+    let order = |x: &(f32, u32), y: &(f32, u32)| -> Ordering {
+        x.0.total_cmp(&y.0).then(x.1.cmp(&y.1))
+    };
     for i in 0..n {
         let a = &data[i * n_features..(i + 1) * n_features];
         row.clear();
@@ -43,12 +52,18 @@ pub fn exact_knn(data: &[f32], n_features: usize, k: usize, metric: Metric) -> K
             };
             (d, j as u32)
         }));
-        // (distance, index) ordering — total_cmp keeps the sort total and
-        // deterministic; ties broken by lower index
-        row.sort_unstable_by(|x, y| x.0.total_cmp(&y.0).then(x.1.cmp(&y.1)));
-        for &(d, j) in row.iter().take(k) {
-            indices.push(j);
-            dists.push(d);
+        // k nearest via quickselect then sort only those k. Partial sort is
+        // bit-identical to sort-all-then-take-k: indices are unique per row,
+        // so the (distance,index) total order has unique elements and the
+        // k smallest form a unique set.
+        if k > 0 {
+            let sel = k.min(n);
+            row.select_nth_unstable_by(sel - 1, order);
+            row[..sel].sort_unstable_by(order);
+            for &(d, j) in &row[..sel] {
+                indices.push(j);
+                dists.push(d);
+            }
         }
     }
     Knn { k, indices, dists }

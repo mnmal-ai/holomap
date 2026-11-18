@@ -43,9 +43,10 @@ pub fn schedule_edges(graph: &FuzzyGraph, n_epochs: usize) -> EdgeSchedule {
     };
     let cutoff = max_w / prune_epochs as f32;
 
-    let mut head = Vec::new();
-    let mut tail = Vec::new();
-    let mut epochs_per_sample = Vec::new();
+    let n_edges = graph.vals.len();
+    let mut head = Vec::with_capacity(n_edges);
+    let mut tail = Vec::with_capacity(n_edges);
+    let mut epochs_per_sample = Vec::with_capacity(n_edges);
     for e in 0..graph.vals.len() {
         let w = graph.vals[e];
         if w < cutoff {
