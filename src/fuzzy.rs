@@ -55,12 +55,26 @@ pub fn fuzzy_simplicial_set(knn: &Knn, calib: &SmoothKnn) -> FuzzyGraph {
             .unwrap_or(0.0)
     };
 
-    // union of A and Aᵀ coordinates, deduped — the t-conorm support
-    let mut coords: Vec<(u32, u32)> = directed
-        .iter()
-        .flat_map(|&(r, c, _)| [(r, c), (c, r)])
-        .collect();
-    coords.sort_unstable();
+    // union of A and Aᵀ coordinates, deduped — the t-conorm support.
+    // directed is sorted by (row, col), but a reverse edge (c,r) gets pushed into
+    // row_buckets[r'] out of ascending-col order relative to forward edges. Sort
+    // each bucket before concatenating so the global output is (row,col)-sorted.
+    // Dedup is still needed: an edge may exist in BOTH A and Aᵀ as separate directed
+    // entries, which would otherwise produce a duplicate pair in coords.
+    let mut row_buckets: Vec<Vec<(u32, u32)>> = vec![Vec::with_capacity(4); n];
+    for &(r, c, _) in &directed {
+        row_buckets[r as usize].push((r, c));
+        if r != c {
+            row_buckets[c as usize].push((c, r));
+        }
+    }
+    for bucket in &mut row_buckets {
+        bucket.sort_unstable();
+    }
+    let mut coords: Vec<(u32, u32)> = Vec::with_capacity(directed.len() * 2);
+    for bucket in &row_buckets {
+        coords.extend_from_slice(bucket);
+    }
     coords.dedup();
 
     let mut rows = Vec::with_capacity(coords.len());
@@ -151,5 +165,45 @@ mod tests {
         // (0,1)/(1,0): one-directional w survives unchanged and mirrors;
         // (1,2)/(2,1): both directions are 1.0 (d == rho) → fused 1.0
         assert_eq!(g.vals, vec![w, w, 1.0, 1.0]);
+    }
+    /// Dedup-exercising case: three points on a line where BOTH (0,2) and (2,0)
+    /// exist as separate directed entries. The flat_map of A ∪ Aᵀ would produce
+    /// duplicate coords pairs; this validates the bucket build + dedup produces the
+    /// same 6 unique pairs (not 8) with correct values.
+    #[test]
+    fn dedups_overlapping_directed_entries() {
+        // Points at 0.0, 2.0, 4.0 with k=3:
+        //   Point 0's neighbours: self(0), p1 (d=2), p2 (d=4)
+        //   Point 1's neighbours: p0 (d=2), self(1), p2 (d=2)
+        //   Point 2's neighbours: p0 (d=4), p1 (d=2), self(2)
+        // Both directed (0→2) and (2→0) exist → coords had duplicate pairs before dedup.
+        let knn = Knn {
+            k: 3,
+            indices: vec![0, 1, 2, 0, 1, 2, 0, 1, 2],
+            dists: vec![0.0, 2.0, 4.0, 2.0, 0.0, 2.0, 4.0, 2.0, 0.0],
+        };
+        let calib = SmoothKnn {
+            sigmas: vec![1.0_f32; 3],
+            rhos: vec![2.0_f32; 3],
+        };
+        let g = fuzzy_simplicial_set(&knn, &calib);
+
+        // (0,1) and (1,2): d == rho in both directions → w=1.0 each way → t-conorm(1,1)=1.0
+        // (0,2)/(2,0): the dedup case.
+        //   Point 0→2: d=4, rho=2, sigma=1 → val = exp(-(4-2)/1) = e^{-2}
+        //   t-conorm(e^{-2}, e^{-2}) = (e^{-2} + e^{-2}) - e^{-2} * e^{-2}
+        let w_far = (-2.0_f32).hi_exp();
+        let w_fused = (w_far + w_far) - w_far * w_far;
+
+        assert_eq!(g.n, 3);
+        // Exactly 6 unique pairs sorted by (row,col): (0,1)(0,2)(1,0)(1,2)(2,0)(2,1).
+        // A missing/incorrect dedup would produce 8 entries.
+        assert_eq!(g.vals.len(), 6);
+        assert_eq!(g.rows, vec![0, 0, 1, 1, 2, 2]);
+        assert_eq!(g.cols, vec![1, 2, 0, 2, 0, 1]);
+        let expected = [1.0_f32, w_fused, 1.0_f32, 1.0_f32, w_fused, 1.0_f32];
+        for (i, (&a, &e)) in g.vals.iter().zip(&expected).enumerate() {
+            assert!((a - e).abs() < 1e-6, "entry {i}: {a} vs {e}");
+        }
     }
 }
