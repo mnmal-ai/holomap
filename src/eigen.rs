@@ -193,12 +193,15 @@ fn lanczos_eigenpairs(lap: &Laplacian, k: usize) -> EigenPairs {
             normalize(&mut x);
             // explicit residual ‖B·x − θ·x‖
             lap.matvec(&x, &mut tmp);
-            let resid: f64 = x
-                .iter()
-                .zip(&tmp)
-                .map(|(&xi, &lxi)| (2.0 * xi - lxi - theta * xi).powi(2))
-                .sum::<f64>()
-                .sqrt();
+            // Explicit index loop — same f64 left-fold accumulation order as the
+            // old .iter().zip(&tmp).map(|(xi,lxi)| (2*xi-lxi-theta*xi).powi(2))
+            // .sum::<f64>().sqrt() version, following the dot() pattern above.
+            let mut resid_sq: f64 = 0.0;
+            for i in 0..n {
+                let t = 2.0 * x[i] - tmp[i] - theta * x[i];
+                resid_sq += t * t;
+            }
+            let resid: f64 = resid_sq.sqrt();
             if resid < LOCK_TOL && locked.len() < k {
                 locked.push((2.0 - theta, x));
             } else if next_r.is_none() {
