@@ -34,9 +34,8 @@ pub fn exact_knn(data: &[f32], n_features: usize, k: usize, metric: Metric) -> K
     // deterministic; ties broken by lower index. Indices are unique per row,
     // so the k smallest form a unique set and their sorted order is unique
     // — partial sort is bit-identical to a full sort + take(k).
-    let order = |x: &(f32, u32), y: &(f32, u32)| -> Ordering {
-        x.0.total_cmp(&y.0).then(x.1.cmp(&y.1))
-    };
+    let order =
+        |x: &(f32, u32), y: &(f32, u32)| -> Ordering { x.0.total_cmp(&y.0).then(x.1.cmp(&y.1)) };
     for i in 0..n {
         let a = &data[i * n_features..(i + 1) * n_features];
         row.clear();
