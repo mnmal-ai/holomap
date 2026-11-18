@@ -109,6 +109,13 @@ fn multi_component_layout(
         meta
     };
 
+    // Single-pass collection of members per label. The old in-loop filter gave
+    // O(n * n_components); buckets keep ascending index order so output is
+    // identical to the previous implementation (integer-only, zero determinism risk).
+    let mut member_buckets: Vec<Vec<usize>> = vec![Vec::with_capacity(4); n_components];
+    for i in 0..n {
+        member_buckets[labels[i] as usize].push(i);
+    }
     let mut result = vec![0.0_f64; n * dim];
     for label in 0..n_components {
         // data_range: half the distance to the nearest other meta position
@@ -131,17 +138,17 @@ fn multi_component_layout(
         }
         let data_range = nearest / 2.0;
 
-        let members: Vec<usize> = (0..n).filter(|&i| labels[i] as usize == label).collect();
+        let members = &member_buckets[label];
         if members.len() < 2 * dim || members.len() <= dim + 1 {
             // tiny component: seeded uniform box around the meta position
-            for &i in &members {
+            for i in members {
                 for d in 0..dim {
                     result[i * dim + d] =
                         f64::from(rng.uniform(-(data_range as f32), data_range as f32)) + mine[d];
                 }
             }
         } else {
-            let sub = extract_component(graph, labels, label as u32, &members);
+            let sub = extract_component(graph, labels, label as u32, members);
             let local = spectral_layout_single(&sub, dim);
             let max_abs = local.iter().fold(0.0_f64, |m, &x| m.max(x.abs()));
             let expansion = if max_abs > 0.0 {
