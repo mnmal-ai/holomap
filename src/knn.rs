@@ -31,9 +31,7 @@ pub fn exact_knn(data: &[f32], n_features: usize, k: usize, metric: Metric) -> K
     let mut dists = Vec::with_capacity(n * k);
     let mut row: Vec<(f32, u32)> = Vec::with_capacity(n);
     // (distance, index) total order — total_cmp keeps the order total and
-    // deterministic; ties broken by lower index. Indices are unique per row,
-    // so the k smallest form a unique set and their sorted order is unique
-    // — partial sort is bit-identical to a full sort + take(k).
+    // deterministic; ties broken by lower index.
     let order =
         |x: &(f32, u32), y: &(f32, u32)| -> Ordering { x.0.total_cmp(&y.0).then(x.1.cmp(&y.1)) };
     for i in 0..n {
