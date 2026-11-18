@@ -126,9 +126,8 @@ fn multi_component_layout(
                 continue;
             }
             let o = &meta[other * dim..(other + 1) * dim];
-            // Explicit index loop — same f64 left-fold accumulation order as
-            // the old .iter().zip(o).map(|(a,b)| (a-b).powi(2)).sum::<f64>().sqrt()
-            // version, now avoiding iterator overhead per component pair.
+            // Sums squares (>=0); starting at 0.0 matches .sum::<f64>() output
+            // since negative zero does not affect the result of adding non-negative values.
             let mut s = 0.0_f64;
             for x in 0..dim {
                 let diff = mine[x] - o[x];

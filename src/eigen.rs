@@ -193,12 +193,14 @@ fn lanczos_eigenpairs(lap: &Laplacian, k: usize) -> EigenPairs {
             normalize(&mut x);
             // explicit residual ‖B·x − θ·x‖
             lap.matvec(&x, &mut tmp);
-            let resid: f64 = x
-                .iter()
-                .zip(&tmp)
-                .map(|(&xi, &lxi)| (2.0 * xi - lxi - theta * xi).powi(2))
-                .sum::<f64>()
-                .sqrt();
+            // Sums squares (>=0); starting at 0.0 is equivalent to .sum::<f64>()
+            // since negative zero does not change the result of adding non-negative values.
+            let mut resid_sq: f64 = 0.0;
+            for i in 0..n {
+                let t = 2.0 * x[i] - tmp[i] - theta * x[i];
+                resid_sq += t * t;
+            }
+            let resid: f64 = resid_sq.sqrt();
             if resid < LOCK_TOL && locked.len() < k {
                 locked.push((2.0 - theta, x));
             } else if next_r.is_none() {
@@ -223,11 +225,10 @@ fn lanczos_eigenpairs(lap: &Laplacian, k: usize) -> EigenPairs {
 }
 
 fn dot(a: &[f64], b: &[f64]) -> f64 {
-    // Explicit index loop: LLVM vectorizes this into `movsd`/`mulsd`/`addsd`
-    // on SSE/AVX (and may fuse further on FMA). Summation order and precision
-    // are unchanged from the iterator version, so determinism holds bit-for-bit.
+    // Explicit index loop. The std Sum trait starts at -0.0 (f64 Sum::sum uses
+    // fold(-0.0, +)), so starting the same way keeps sign-of-zero bit-identical.
+    let mut s: f64 = -0.0;
     let n = std::cmp::min(a.len(), b.len());
-    let mut s: f64 = 0.0;
     for i in 0..n {
         s += a[i] * b[i];
     }
