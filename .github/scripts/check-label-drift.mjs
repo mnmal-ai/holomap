@@ -1,15 +1,20 @@
 /**
- * Label-catalog drift guard. `check-pr-labels.js` treats Area as an open set,
- * so a package with no label would otherwise pass the hygiene gate silently.
+ * Label-catalog drift guard. Two checks, one command, run in CI via
+ * `check-pr-labels.mjs` (repo state, not PR state):
  *
- * Compares every workspace member (a `package.json` or Cargo `[package]` under
- * `packages/`, `apps/`, `plugins/` or `crates/`, plus a root crate and `npm/`)
- * against the repo's label list and exits non-zero naming the members with no
- * Area label, with the exact `gh label create` to fix it.
- * One direction only: extra labels (e.g. `repo`) are not drift — only a package nobody can label is.
+ * 1. **Missing Area labels.** Every workspace member (a `package.json` or
+ *    Cargo `[package]` under `packages/`, `apps/`, `plugins/` or `crates/`,
+ *    plus a root crate and `npm/`) must have an area label matching its
+ *    member name. A package with no area label passes the PR hygiene gate
+ *    silently (Area is an open set in `check-pr-labels.mjs`), so we fail fast.
  *
- * CLI usage (in CI): needs `gh` authenticated (GH_TOKEN) — run from the repo
- * root. Reads nothing from the PR; this is repo state, not PR state.
+ * 2. **Unknown labels.** Any repo label that is neither a workspace member
+ *    name nor one of the known functional (Type/Priority/workflow) labels is
+ *    considered stale — most commonly a GitHub default (`duplicate`, `good
+ *    first issue`, ...) or a dependabot-generated language label (`javascript`).
+ *    We hard-fail and emit the exact `gh label delete` command to fix it.
+ *
+ * CLI usage: needs `gh` authenticated (GH_TOKEN) — run from the repo root.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -25,6 +30,32 @@ const SINGLE_MEMBERS = [
   ['npm', ['package.json', 'Cargo.toml']]
 ];
 const ORG_PREFIX = '@mnmal-ai/';
+
+/**
+ * Known functional labels that are neither areas nor member names but are
+ * intentional repo conventions. These are stable across PRs and should never
+ * be deleted, so they must pass the drift check silently.
+ */
+export const FUNCTIONAL_LABELS = [
+  // Priority
+  'P0-critical',
+  'P1-high',
+  'P2-medium',
+  'P3-low',
+  // Type (used by pr-hygiene)
+  'feat',
+  'fix',
+  'refactor',
+  'docs',
+  'test',
+  'infra',
+  // Workflow / status
+  'blocked',
+  'needs-review',
+  'ready-to-merge',
+  // Generic
+  'repo'
+];
 
 /**
  * @param {string} rootDir repo root
@@ -82,6 +113,17 @@ export function findMissingAreaLabels({ workspaceMembers, labelNames }) {
   return workspaceMembers.filter((m) => !labels.has(m)).sort();
 }
 
+/**
+ * Labels that are neither workspace-member names nor known functional labels.
+ * These are drift — stale defaults or dependabot residue.
+ * @param {{ workspaceMembers: string[], labelNames: string[] }} args
+ * @returns {string[]} unknown labels, sorted
+ */
+export function findUnknownLabels({ workspaceMembers, labelNames }) {
+  const allowed = new Set([...workspaceMembers, ...FUNCTIONAL_LABELS]);
+  return labelNames.filter((l) => !allowed.has(l)).sort();
+}
+
 function listRepoLabels() {
   const raw = execFileSync('gh', ['label', 'list', '--json', 'name', '--limit', '200'], {
     encoding: 'utf8'
@@ -92,24 +134,45 @@ function listRepoLabels() {
 function main() {
   const rootDir = process.argv[2] ?? process.cwd();
   const members = discoverWorkspaceMembers(rootDir);
-  const missing = findMissingAreaLabels({
-    workspaceMembers: members,
-    labelNames: listRepoLabels()
-  });
-  if (missing.length === 0) {
+  const allLabels = listRepoLabels();
+
+  const missingAreas = findMissingAreaLabels({ workspaceMembers: members, labelNames: allLabels });
+  const unknownLabels = findUnknownLabels({ workspaceMembers: members, labelNames: allLabels });
+
+  if (missingAreas.length === 0 && unknownLabels.length === 0) {
     process.stdout.write(
-      `✅ label catalog OK — all ${members.length} workspace members have an Area label.\n`
+      `✅ label catalog OK — ${members.length} workspace members have Area labels, no stale/unknown labels.\n`
     );
     return;
   }
-  process.stdout.write('❌ label catalog drift — workspace members with no Area label:\n');
-  for (const m of missing) {
-    process.stdout.write(`  • ${m}\n`);
+
+  let exitCode = 0;
+
+  if (missingAreas.length > 0) {
+    exitCode = 1;
     process.stdout.write(
-      `    gh label create ${m} --color 1d76db --description "<one line, see sibling labels>"\n`
+      `❌ label catalog drift — workspace members with no Area label (${missingAreas.length}):\n`
     );
+    for (const m of missingAreas) {
+      process.stdout.write(`  • ${m}\n`);
+      process.stdout.write(
+        `    gh label create ${m} --color 1d76db --description "<one line, see sibling labels>"\n`
+      );
+    }
   }
-  process.exitCode = 1;
+
+  if (unknownLabels.length > 0) {
+    exitCode = 1;
+    process.stdout.write(
+      `❌ label catalog drift — stale/unknown labels (${unknownLabels.length}):\n`
+    );
+    for (const l of unknownLabels) {
+      process.stdout.write(`  • ${l}\n`);
+      process.stdout.write(`    gh label delete --yes "${l}"\n`);
+    }
+  }
+
+  process.exitCode = exitCode;
 }
 
 // Run as CLI only when invoked directly (not when imported by tests).
