@@ -77,7 +77,7 @@ let embedding = Holomap::builder(42)   // the seed is a required argument
     .fit_transform(&data, n_features)?;
 ```
 
-## Status: v0.3.0 — shipped
+## Status: v0.3.1 — shipped
 
 | | Milestone | Exit test | |
 |---|---|---|---|
@@ -86,13 +86,15 @@ let embedding = Holomap::builder(42)   // the seed is a required argument
 | M3 | seeded SGD + end-to-end `fit_transform` | trustworthiness vs `umap-learn` on blobs/swiss-roll; bit-identity CI gate | ✅ |
 | M4 | API polish, docs, crates.io publish | | ✅ |
 
+**v0.3.1** is an internal restructure of the kNN and fuzzy-simplicial-set passes — exact-kNN now computes each unordered pair's distance once and feeds both endpoints, selects the k nearest by quickselect before sorting only those k, and keeps a bounded top-k per row (O(n·k) memory, no N×N matrix); the fuzzy pass swaps a per-row search for a merge-style lookup. **Embeddings are bit-identical to v0.3.0** — the parity and determinism suites (fixture blobs/cosine/duplicates against umap-learn 0.5.12, the f32/f64 regression fixtures, and the 64-config proptest) all pass unchanged. The change is a real but small constant-factor win: measured **2–6% faster per change at n=3000–8000** (the PR #21/#22 same-machine A/Bs), and within noise on the shipped 1000×50-d bench (~4.6 s across 3 runs vs the pre-optimization tree's ~4.7–5.15 s on the same host, overlapping). It is **not** a large speed-up: SGD, not kNN, dominates wall time at 50-d, so the end-to-end gain stays single-digit percent. Do not quote it as a headline performance release.
+
 **v0.3.0** closes the cross-CPU divergence described above: transcendentals move to the pure-Rust `libm` crate, so output no longer depends on which SIMD kernels glibc's IFUNC resolver picks. **This changes embeddings on every host** — 0.2.0 figures do not carry over — and costs ~1.35× throughput. Native output now agrees with the wasm build's exactly.
 
 **v0.2.0** added: non-finite input rejection, an optional `ndarray` front door (`fit_transform_array`), a property-tested determinism invariant, and a cross-platform CI matrix (Linux/macOS/Windows) backing the parity claim with evidence.
 
 Measured (k=15 trustworthiness, same data, same params): blobs 0.954 vs
 umap-learn's 0.955; swiss roll 0.991 vs 0.990. Wall-clock at 1k×50-d points:
-~4.5 s release-mode vs umap-learn's ~28 s on the same machine (was ~3 s before 0.3.0; see the throughput note above).
+~4.6 s release-mode vs umap-learn's ~28 s on the same machine (was ~3 s before 0.3.0; ~4.5 s on 0.3.0 — 0.3.1 is bit-identical and within noise of it; see the throughput note above).
 
 ## Scope (v1)
 
