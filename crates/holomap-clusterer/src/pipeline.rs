@@ -28,7 +28,7 @@
 //! ## Pipeline metric
 //!
 //! Corpus embeddings are bge-m3 / 1024-d, L2-normalised.  The pipeline
-//! preserves the normalisation and then passes
+//! preserves the normalisation (see `l2_normalise`) and then passes
 //! `Metric::Cosine` to holomap so the kNN stage uses cosine distance — the
 //! natural choice for magnitude-normalised text embeddings and matching the
 //! Python UMAP baseline (`metric='cosine'`).  On the unit sphere cosine
@@ -93,45 +93,34 @@ pub fn run_pipeline(req: &Request) -> Response {
         return error_response("zero-dimensional vectors".to_string());
     }
 
-    // Step 1 — L2-normalise into a single flat row-major buffer, row by
-    // row (cosine ~ euclidean on unit sphere; holomap's Metric::Cosine
-    // handles the general case, but normalisation here matches the Python
-    // baseline and is numerically cheap).
-    let n = req.vectors.len();
-    let mut normed = Vec::with_capacity(n * dim);
-    for v in &req.vectors {
-        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if norm == 0.0 {
-            // Zero vectors are left as-is (all-zeros — they will be noise
-            // outliers in HDBSCAN, which is appropriate).
-            normed.extend_from_slice(v);
-        } else {
-            normed.extend(v.iter().map(|x| x / norm));
-        }
-    }
-
-    // Step 2 — optional holomap UMAP reduction.
-    // hdbscan's API takes &[Vec<T>], so the reduced output is chunked back
-    // into rows only at the boundary; holomap itself consumes the flat
-    // buffer directly.
+    // Step 1 — L2-normalise. hdbscan's API takes &[Vec<T>], so the two
+    // paths differ in representation:
+    // - no reduction (n_components == 0): normalise straight into rows —
+    //   one copy, no flat+rows duplication.
+    // - reduction: normalise into one flat buffer, feed it to holomap
+    //   (flat) directly, and chunk back into rows only at the hdbscan
+    //   boundary. This saves one full copy of the input on that path.
+    // Zero vectors are left as-is (all-zeros).
     let to_cluster: Vec<Vec<f32>> = if req.params.n_components == 0 {
-        // No reduction: cluster the normalised vectors directly.
-        normed.chunks_exact(dim).map(<[f32]>::to_vec).collect()
+        l2_normalise(&req.vectors)
     } else {
-        let embedding = match holomap_reduce(
+        let normed = l2_normalise_flat(&req.vectors, dim);
+        match holomap_reduce(
             &normed,
             dim,
             req.params.n_components,
             req.params.n_neighbors,
             req.params.seed,
         ) {
-            Ok(e) => e,
+            Ok(embedding) => {
+                drop(normed);
+                embedding
+                    .chunks_exact(req.params.n_components)
+                    .map(<[f32]>::to_vec)
+                    .collect()
+            }
             Err(e) => return error_response(format!("holomap reduction failed: {e}")),
-        };
-        embedding
-            .chunks_exact(req.params.n_components)
-            .map(<[f32]>::to_vec)
-            .collect()
+        }
     };
 
     // Step 3 — HDBSCAN (serial, no rayon, fully deterministic).
@@ -163,6 +152,37 @@ pub fn run_pipeline(req: &Request) -> Response {
     }
 }
 
+/// L2-normalise every vector → `Vec<Vec<f32>>` (per-row). Zero vectors are
+/// left as-is (all-zeros — they will be noise outliers in HDBSCAN, which is
+/// appropriate).
+fn l2_normalise(vecs: &[Vec<f32>]) -> Vec<Vec<f32>> {
+    vecs.iter()
+        .map(|v| {
+            let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if norm == 0.0 {
+                v.clone()
+            } else {
+                v.iter().map(|x| x / norm).collect()
+            }
+        })
+        .collect()
+}
+
+/// L2-normalise every vector into a single flat row-major buffer (`n * dim`).
+/// Zero vectors are left as-is (all-zeros).
+fn l2_normalise_flat(vecs: &[Vec<f32>], dim: usize) -> Vec<f32> {
+    let mut flat = Vec::with_capacity(vecs.len() * dim);
+    for v in vecs {
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm == 0.0 {
+            flat.extend_from_slice(v);
+        } else {
+            flat.extend(v.iter().map(|x| x / norm));
+        }
+    }
+    flat
+}
+
 /// Reduce via holomap (seedable UMAP-class).
 ///
 /// Parameter choices:
@@ -183,8 +203,7 @@ pub fn run_pipeline(req: &Request) -> Response {
 ///   auto-epoch logic in umap-learn's reference implementation.
 /// - n_components, n_neighbors, seed: from the protocol params.
 ///
-/// Output is the flat row-major embedding (n_samples * n_components); the
-/// caller chunks it back into per-row Vecs for hdbscan's API.
+/// Output is the flat embedding (n_samples * n_components).
 fn holomap_reduce(
     flat: &[f32],
     n_features: usize,
@@ -192,8 +211,6 @@ fn holomap_reduce(
     n_neighbors: usize,
     seed: u64,
 ) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
-    // holomap takes a flat row-major slice directly — no interpolating
-    // copy, no per-row Vec allocation.
     let embedding = Holomap::builder(seed)
         .n_components(n_components)
         .n_neighbors(n_neighbors)
@@ -203,8 +220,6 @@ fn holomap_reduce(
         // spread defaults to 1.0, n_epochs defaults to auto — no overrides needed.
         .fit_transform(flat, n_features)?;
 
-    // Flat output (n_samples * n_components) is chunked back into rows at
-    // the call site; n_samples is not recorded here, so return the flat row.
     Ok(embedding)
 }
 
