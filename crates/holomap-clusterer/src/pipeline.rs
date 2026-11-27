@@ -93,23 +93,32 @@ pub fn run_pipeline(req: &Request) -> Response {
         return error_response("zero-dimensional vectors".to_string());
     }
 
-    // Step 1 — L2-normalise (cosine ~ euclidean on unit sphere; holomap's
-    // Metric::Cosine handles the general case, but normalisation here matches
-    // the Python baseline and is numerically cheap).
-    let normed = l2_normalise(&req.vectors);
-
-    // Step 2 — optional holomap UMAP reduction.
+    // Step 1 — L2-normalise. hdbscan's API takes &[Vec<T>], so the two
+    // paths differ in representation:
+    // - no reduction (n_components == 0): normalise straight into rows —
+    //   one copy, no flat+rows duplication.
+    // - reduction: normalise into one flat buffer, feed it to holomap
+    //   (flat) directly, and chunk back into rows only at the hdbscan
+    //   boundary. This saves one full copy of the input on that path.
+    // Zero vectors are left as-is (all-zeros).
     let to_cluster: Vec<Vec<f32>> = if req.params.n_components == 0 {
-        // No reduction: cluster the normalised vectors directly.
-        normed
+        l2_normalise(&req.vectors)
     } else {
+        let normed = l2_normalise_flat(&req.vectors, dim);
         match holomap_reduce(
             &normed,
+            dim,
             req.params.n_components,
             req.params.n_neighbors,
             req.params.seed,
         ) {
-            Ok(v) => v,
+            Ok(embedding) => {
+                drop(normed);
+                embedding
+                    .chunks_exact(req.params.n_components)
+                    .map(<[f32]>::to_vec)
+                    .collect()
+            }
             Err(e) => return error_response(format!("holomap reduction failed: {e}")),
         }
     };
@@ -143,8 +152,9 @@ pub fn run_pipeline(req: &Request) -> Response {
     }
 }
 
-/// L2-normalise every vector. Zero vectors are left as-is (all-zeros — they
-/// will be noise outliers in HDBSCAN, which is appropriate).
+/// L2-normalise every vector → `Vec<Vec<f32>>` (per-row). Zero vectors are
+/// left as-is (all-zeros — they will be noise outliers in HDBSCAN, which is
+/// appropriate).
 fn l2_normalise(vecs: &[Vec<f32>]) -> Vec<Vec<f32>> {
     vecs.iter()
         .map(|v| {
@@ -156,6 +166,21 @@ fn l2_normalise(vecs: &[Vec<f32>]) -> Vec<Vec<f32>> {
             }
         })
         .collect()
+}
+
+/// L2-normalise every vector into a single flat row-major buffer (`n * dim`).
+/// Zero vectors are left as-is (all-zeros).
+fn l2_normalise_flat(vecs: &[Vec<f32>], dim: usize) -> Vec<f32> {
+    let mut flat = Vec::with_capacity(vecs.len() * dim);
+    for v in vecs {
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm == 0.0 {
+            flat.extend_from_slice(v);
+        } else {
+            flat.extend(v.iter().map(|x| x / norm));
+        }
+    }
+    flat
 }
 
 /// Reduce via holomap (seedable UMAP-class).
@@ -178,18 +203,14 @@ fn l2_normalise(vecs: &[Vec<f32>]) -> Vec<Vec<f32>> {
 ///   auto-epoch logic in umap-learn's reference implementation.
 /// - n_components, n_neighbors, seed: from the protocol params.
 ///
-/// Output is a flat embedding reshaped into Vec<Vec<f32>> (n_samples × k).
+/// Output is the flat embedding (n_samples * n_components).
 fn holomap_reduce(
-    vecs: &[Vec<f32>],
+    flat: &[f32],
+    n_features: usize,
     n_components: usize,
     n_neighbors: usize,
     seed: u64,
-) -> Result<Vec<Vec<f32>>, Box<dyn std::error::Error>> {
-    let n_features = vecs[0].len();
-
-    // holomap takes a flat row-major slice.
-    let flat: Vec<f32> = vecs.iter().flatten().copied().collect();
-
+) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
     let embedding = Holomap::builder(seed)
         .n_components(n_components)
         .n_neighbors(n_neighbors)
@@ -197,14 +218,9 @@ fn holomap_reduce(
         // min_dist: 0.1 (holomap default) — NOT 0.0.
         // See doc comment above for the full rationale.
         // spread defaults to 1.0, n_epochs defaults to auto — no overrides needed.
-        .fit_transform(&flat, n_features)?;
+        .fit_transform(flat, n_features)?;
 
-    // Reshape flat output (n_samples * n_components) → Vec<Vec<f32>>.
-    // chunks_exact on an n_samples*n_components slice yields exactly n_samples rows
-    Ok(embedding
-        .chunks_exact(n_components)
-        .map(|chunk| chunk.to_vec())
-        .collect())
+    Ok(embedding)
 }
 
 fn error_response(msg: String) -> Response {
