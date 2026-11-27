@@ -119,10 +119,6 @@ An earlier version of that test asserted identical cluster counts. It passed, an
 
 The honest mitigation is visibility — a stored clustering that records its backend turns a backend switch into an observable event rather than a silent reprocessing.
 
-### `SubprocessClusterer` keeps one child alive across calls
-
-The wire protocol is already a long-lived JSON-lines server — one request per stdin line, one response per stdout line — but the original wrapper spawned a fresh process per `cluster()` call. The current implementation lazily spawns a single child, serialises requests through it (the child processes stdin sequentially), and respawns on crash. Reuse is a real wall-clock win for callers that cluster repeatedly (a spawn+exit per call is ~10–50 ms of overhead on top of the actual work). The child is killed when the parent exits; call `close()` yourself if you want the child to die deterministically before shutdown, and reject `cluster()` calls after `close()`.
-
 Rejections are held to a stricter bar: the same bad input must produce the *same* `ClustererError` message on both backends, verified case by case. A shared validator runs before either backend does any work — so `SubprocessClusterer` rejects bad input without paying for a spawn, and the caller's error handling doesn't depend on which backend is configured.
 
 One class of rejection is subprocess-only, because it has no wasm analogue: the child dying. `SubprocessClusterer` rejects on **any** non-zero exit or terminating signal — `clusterer exited 101: …` or `clusterer killed by SIGKILL: …`, carrying stderr (or stdout, if the child said nothing on stderr). Partial stdout from a failed child is never salvaged, and that is safe rather than merely strict: the child reports every protocol-level error as a normal response on stdout and *still exits 0*, so a non-zero exit only ever means abnormal termination. If you match on error text to distinguish a bad batch from a dead peripheral, `clusterer exited`/`clusterer killed by` is the peripheral.
