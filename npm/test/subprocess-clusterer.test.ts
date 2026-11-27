@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
 import { ClustererError, SubprocessClusterer } from '../src/index.js';
 
 const BIN = new URL('../../target/release/holomap-clusterer', import.meta.url).pathname;
@@ -96,5 +97,62 @@ describe('SubprocessClusterer', () => {
     await expect(
       clusterer.cluster(blobs(), { nComponents: 0, nNeighbors: 15, minClusterSize: 5, seed: 42 })
     ).rejects.toThrow(/killed by SIGKILL/);
+  });
+});
+
+describe('SubprocessClusterer lifecycle', () => {
+  it('reuses the child across calls', async () => {
+    const clusterer = new SubprocessClusterer([BIN]);
+    try {
+      const a = await clusterer.cluster(blobs(), { nComponents: 0, nNeighbors: 15, minClusterSize: 5, seed: 42 });
+      const b = await clusterer.cluster(blobs(), { nComponents: 0, nNeighbors: 15, minClusterSize: 5, seed: 42 });
+      expect(a.assignments).toEqual(b.assignments);
+    } finally {
+      await clusterer.close();
+    }
+  });
+
+  it('respawns after the child dies', async () => {
+    const dir = fs.mkdtempSync(`/tmp/subprocess-child_${process.pid}_`);
+    const marker = `${dir}/spawns`;
+    fs.writeFileSync(marker, '0');
+    const script = `${dir}/child.js`;
+    fs.writeFileSync(script, [
+      'const fs = require("node:fs");',
+      'process.stdin.once("data", () => {',
+      '  const marker = process.argv[2];',
+      '  const n = parseInt(fs.readFileSync(marker, "utf8"), 10) + 1;',
+      '  fs.writeFileSync(marker, String(n));',
+      '  if (n > 1) {',
+      '    process.stdout.write(JSON.stringify({ protocol_version: 1, assignments: [0, 0] }) + "\\n");',
+      '    process.exit(0);',
+      '  }',
+      '  process.stdout.write("partial\\n");',
+      '  process.exit(101);',
+      '});',
+    ].join('\n'));
+    const argv = [process.execPath, script, marker];
+    const clusterer = new SubprocessClusterer(argv);
+    try {
+      await expect(
+        clusterer.cluster([new Float32Array(8), new Float32Array(8)], { nComponents: 0, nNeighbors: 15, minClusterSize: 2, seed: 42 })
+      ).rejects.toThrow();
+      // After the crash, the next call spawns a fresh child and succeeds.
+      const result = await clusterer.cluster([new Float32Array(8), new Float32Array(8)], { nComponents: 0, nNeighbors: 15, minClusterSize: 2, seed: 42 });
+      expect(result.assignments).toEqual([0, 0]);
+    } finally {
+      await clusterer.close();
+      fs.rmSync(marker, { force: true });
+    }
+  });
+
+  it('close() shuts down the child', async () => {
+    const clusterer = new SubprocessClusterer([BIN]);
+    await clusterer.cluster(blobs(), { nComponents: 0, nNeighbors: 15, minClusterSize: 5, seed: 42 });
+    await clusterer.close();
+    // Closed instances do not attempt to spawn into a dead pipe.
+    await expect(
+      clusterer.cluster(blobs(), { nComponents: 0, nNeighbors: 15, minClusterSize: 5, seed: 42 })
+    ).rejects.toThrow(/closed/);
   });
 });
